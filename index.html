@@ -1831,8 +1831,15 @@ function readMT5File(f){
   r.onerror=()=>document.getElementById('mt5status').textContent='Could not read that file.';
   r.readAsText(f);
 }
+async function pmap(items, fn, conc){
+  const out=new Array(items.length); let i=0;
+  async function worker(){ while(i<items.length){ const idx=i++; try{ out[idx]=await fn(items[idx],idx); }catch(e){ out[idx]=null; } } }
+  await Promise.all(Array.from({length:Math.min(conc||5, items.length)}, worker));
+  return out;
+}
 async function importMT5Trades(arr){
-  let added=0,updated=0; const tickets=[];
+  let added=0,updated=0; const tickets=[]; const shotJobs=[];
+  const st=()=>document.getElementById('mt5status');
   for(const m of arr){
     const ticket=String(m.ticket||m.posId||m.id||'');
     let t = ticket ? TRADES.find(x=>x.mt5Ticket===ticket) : null;
@@ -1861,21 +1868,32 @@ async function importMT5Trades(arr){
       fees: (t?t.fees:'')||''
     };
     if(m.profit!=null && !isOpen) base.pnlManual=m.profit;
-    if(t){
-      Object.assign(t,base);
-      const c=calc(t); t.pnl=isOpen?0:c.pnl; t.r=c.r; t.risk=c.risk;
-      if(shots.length){ await sSet('tj_shots_'+t.id,shots); t.hasShots=true; }
-      updated++;
-    } else {
-      const nt=Object.assign({id:uid(),setupId:'',strats:[],psych:[],notesPre:'',notesPost:'',hasShots:shots.length>0},base);
-      const c=calc(nt); nt.pnl=isOpen?0:c.pnl; nt.r=c.r; nt.risk=c.risk;
-      TRADES.push(nt);
-      if(shots.length) await sSet('tj_shots_'+nt.id,shots);
-      added++;
-    }
+    let id;
+    if(t){ Object.assign(t,base); const c=calc(t); t.pnl=isOpen?0:c.pnl; t.r=c.r; t.risk=c.risk; id=t.id; updated++; }
+    else { const nt=Object.assign({id:uid(),setupId:'',strats:[],psych:[],notesPre:'',notesPost:'',hasShots:false},base); const c=calc(nt); nt.pnl=isOpen?0:c.pnl; nt.r=c.r; nt.risk=c.risk; TRADES.push(nt); id=nt.id; added++; }
+    if(shots.length) shotJobs.push({id, shots});
     if(ticket) tickets.push(ticket);
   }
-  await sSet('tj_trades',TRADES);
+  // upload ALL screenshots across all trades in parallel (cheap concurrency), then save once
+  if(DRIVE_ON && driveConnected){
+    DOC.shotMap=DOC.shotMap||{};
+    const flat=[]; shotJobs.forEach(j=>j.shots.forEach((s,k)=>flat.push({id:j.id,k,data:s.data,label:s.label||''})));
+    let done=0; const total=flat.length;
+    if(st()&&total) st().textContent=`Uploading screenshots… 0/${total}`;
+    const res=await pmap(flat, async job=>{ const fid=await uploadShot(job.data); done++; if(st()) st().textContent=`Uploading screenshots… ${done}/${total}`; return {id:job.id,k:job.k,fid,label:job.label}; }, 6);
+    const byId={}; res.forEach(r=>{ if(r&&r.fid){ (byId[r.id]=byId[r.id]||[]).push(r); } });
+    shotJobs.forEach(j=>{
+      const list=(byId[j.id]||[]).sort((a,b)=>a.k-b.k).map(x=>({fid:x.fid,label:x.label}));
+      DOC.shotMap[j.id]=list;
+      const tr=TRADES.find(x=>x.id===j.id); if(tr) tr.hasShots=list.length>0;
+    });
+    DOC.trades=TRADES;
+    if(st()) st().textContent='Saving…';
+    await saveDoc();
+  } else {
+    shotJobs.forEach(j=>{ lsSet('tj_shots_'+j.id, j.shots); const tr=TRADES.find(x=>x.id===j.id); if(tr) tr.hasShots=j.shots.length>0; });
+    lsSet('tj_trades',TRADES);
+  }
   return {added,updated,tickets};
 }
 async function doImport(){
