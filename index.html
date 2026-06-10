@@ -649,7 +649,13 @@ async function uploadShot(dataUrl){
   const r=await dFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',{method:'POST',body:form});
   const j=await r.json(); return j.id;
 }
-async function downloadShot(fid){ const r=await dFetch('https://www.googleapis.com/drive/v3/files/'+fid+'?alt=media'); return URL.createObjectURL(await r.blob()); }
+const SHOTCACHE={};
+async function downloadShot(fid){ if(SHOTCACHE[fid]) return SHOTCACHE[fid]; const r=await dFetch('https://www.googleapis.com/drive/v3/files/'+fid+'?alt=media'); const u=URL.createObjectURL(await r.blob()); SHOTCACHE[fid]=u; return u; }
+function shotRefsFor(id){
+  if(DRIVE_ON && driveConnected){ return ((DOC.shotMap&&DOC.shotMap[id])||[]).map(r=>({fid:r.fid,label:r.label||''})); }
+  try{ const v=JSON.parse(localStorage.getItem('tj_shots_'+id)||'[]'); return (v||[]).map(s=> typeof s==='string'?{data:s,label:''}:{data:(s&&s.data)||'',label:(s&&s.label)||''}); }catch(e){ return []; }
+}
+async function resolveShot(ref){ return ref.fid ? await downloadShot(ref.fid) : (ref.data||''); }
 function deleteShotFile(fid){ try{ dFetch('https://www.googleapis.com/drive/v3/files/'+fid,{method:'DELETE'}); }catch(e){} }
 function setSync(state){ const el=document.getElementById('syncDot'); if(!el) return;
   el.className='sync '+state; el.textContent = state==='saving'?'Saving…':state==='synced'?'Synced to Drive':state==='error'?'Sync error':'Offline'; }
@@ -1243,8 +1249,8 @@ async function undoDelete(){
 /* trade detail */
 async function openTradeDetail(id){
   const t=TRADES.find(x=>x.id===id); if(!t) return;
-  const shots = t.hasShots ? await sGet('tj_shots_'+id,[]) : [];
-  const c={pnl:t.pnl,risk:t.risk,r:t.r};
+  const refs = t.hasShots ? shotRefsFor(id) : [];
+  const shotsHtml = refs.length ? `<div class="field"><label>Screenshots</label><div class="shots">${refs.map((r,i)=>`<div class="shot" style="background:var(--surface2)"><img data-si="${i}" alt="">${r.label?`<div class="shotlbl">${esc(r.label)}</div>`:''}</div>`).join('')}</div></div>` : '';
   const body=`
     <div class="calc-box">
       <div class="ci"><div class="l">P&L</div><div class="v mono ${cls(t.pnl)}">${dollars(t.pnl)}</div></div>
@@ -1265,15 +1271,15 @@ async function openTradeDetail(id){
     ${(t.psych&&t.psych.length)?`<div style="margin:6px 0">${t.psych.map(p=>`<span class="tag ${PSYCH.bad.includes(p)?'bad':'good'}">${esc(p)}</span>`).join('')}</div>`:''}
     ${t.notesPre?`<div class="field" style="margin-top:14px"><label>Pre-trade plan</label><div style="font-size:13px;color:var(--ink);white-space:pre-wrap">${esc(t.notesPre)}</div></div>`:''}
     ${t.notesPost?`<div class="field"><label>Post-trade review</label><div style="font-size:13px;color:var(--ink);white-space:pre-wrap">${esc(t.notesPost)}</div></div>`:''}
-    ${shots.length?`<div class="field"><label>Screenshots</label><div class="shots">${shots.map(s=>`<div class="shot"><img data-full src="${shotData(s)}">${shotLabel(s)?`<div class="shotlbl">${esc(shotLabel(s))}</div>`:''}</div>`).join('')}</div></div>`:''}
+    ${shotsHtml}
   `;
   openModal('Trade detail', body, [
     `<button class="btn danger" onclick="delTrade('${t.id}')">${sI(I.trash)}Delete</button>`,
     `<button class="btn ghost" onclick="openTradeEdit('${t.id}')">Edit</button>`,
     `<button class="btn gold" onclick="closeModal('detailScrim')">Done</button>`
   ],'', 'detailScrim');
-  // wire full-size shots
-  setTimeout(()=>{ document.querySelectorAll('[data-full]').forEach((im,i)=> im.onclick=()=>lightboxSrc(shotData(shots[i])) ); },0);
+  // lazy-load screenshots in parallel (cached) so the detail opens instantly
+  refs.forEach((r,i)=>{ resolveShot(r).then(src=>{ const im=document.querySelector('#detailScrim [data-si="'+i+'"]'); if(im&&src){ im.src=src; im.onclick=()=>lightboxSrc(src); } }).catch(()=>{}); });
 }
 
 /* ============================== CALENDAR ============================== */
