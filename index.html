@@ -382,6 +382,7 @@ body.dark #gate{background:radial-gradient(900px 600px at 50% -10%, #241d10, #0e
 .gate-p{font-size:13.5px;color:var(--mut);line-height:1.6;margin-bottom:18px}
 .gate-btn{margin:0 auto}
 .gate-fine{font-size:11px;color:var(--mut2);margin-top:16px;line-height:1.5}
+.gate-err{background:var(--down-bg);border:1px solid color-mix(in srgb,var(--down) 35%,transparent);color:var(--down);border-radius:10px;padding:10px 12px;font-family:'JetBrains Mono';font-size:11px;line-height:1.5;margin:0 0 14px;text-align:left;word-break:break-word}
 .sync{font-size:10px;font-weight:700;text-align:center;margin-top:11px;letter-spacing:.4px;color:var(--rail-mut);text-transform:uppercase}
 .sync.synced{color:var(--rgain)} .sync.saving{color:var(--rail-gold)} .sync.error{color:var(--rloss)}
 :root{ --rail-bg1:#16120b; --rail-bg2:#0b0905; --rail-glow:rgba(236,196,106,.11);
@@ -661,7 +662,14 @@ async function driveSelfTest(){
   await step('list appData', async()=>{ const r=await dFetch('https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&fields=files(id,name)&pageSize=20'); if(!r.ok) throw new Error(r.status); const j=await r.json(); return ((j.files||[]).map(f=>f.name).join(', ')||'empty'); });
   await step('delete test', async()=>{ if(!testId) throw new Error('no file id'); const r=await dFetch('https://www.googleapis.com/drive/v3/files/'+testId,{method:'DELETE'}); return 'status '+r.status; });
   if(lastDriveErr) log.push('last error: '+lastDriveErr);
-  openModal('Drive diagnostics', `<pre style="white-space:pre-wrap;font-size:11.5px;line-height:1.7;font-family:'JetBrains Mono';color:var(--ink)">${esc(log.join('\n'))}</pre>`, [`<button class="btn gold" onclick="closeModal('scrim')">Done</button>`], 'wide');
+  const g=document.getElementById('gate');
+  const pre=`<pre style="white-space:pre-wrap;font-size:11.5px;line-height:1.7;font-family:'JetBrains Mono';color:var(--ink);text-align:left;max-height:50vh;overflow:auto">${esc(log.join('\n'))}</pre>`;
+  if(g && g.classList.contains('on')){
+    const card=g.querySelector('.gate-card');
+    if(card) card.innerHTML=`<div class="gate-t" style="margin-top:0">Drive diagnostics</div>${pre}<div style="display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap"><button class="btn gold" onclick="retryConnect()">Retry connect</button><button class="btn ghost" onclick="driveSelfTest()">Run again</button></div>`;
+  } else {
+    openModal('Drive diagnostics', pre, [`<button class="btn gold" onclick="closeModal('scrim')">Done</button>`], 'wide');
+  }
 }
 const SHOTCACHE={};
 async function downloadShot(fid){ if(!fid) throw new Error('no fid'); if(SHOTCACHE[fid]) return SHOTCACHE[fid]; const r=await dFetch('https://www.googleapis.com/drive/v3/files/'+fid+'?alt=media'); if(!r.ok) throw new Error('shot '+r.status); const u=URL.createObjectURL(await r.blob()); SHOTCACHE[fid]=u; return u; }
@@ -788,7 +796,7 @@ function showGate(state){
     ${ placeholder
       ? `<p class="gate-p">Google Drive isn't configured yet. Paste your OAuth Client ID into <b>GOOGLE_CLIENT_ID</b> at the top of the file and host it (e.g. GitHub Pages).</p>`
       : state==='error'
-      ? `<p class="gate-p">Couldn't reach Google. Check your connection, that this page is served over https, and that its address is added to your OAuth "Authorized JavaScript origins", then retry.</p><button class="btn gold" onclick="retryConnect()">Retry</button>`
+      ? `<p class="gate-p">Couldn't reach Google Drive.${lastDriveErr?'':' Check your connection, that this page is https, and your OAuth "Authorized JavaScript origins".'}</p>${lastDriveErr?`<div class="gate-err">${esc(lastDriveErr)}</div>`:''}<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap"><button class="btn gold" onclick="retryConnect()">Retry</button><button class="btn ghost" onclick="driveSelfTest()">Run diagnostics</button></div>`
       : `<p class="gate-p">Your journal syncs privately to your own Google Drive. Sign in once — after that it connects automatically.</p><button class="btn gold gate-btn" onclick="connectDrive()">${sI(I.spark)}Connect Google Drive</button><p class="gate-fine">A private app folder is used. We can only see files this app creates — never the rest of your Drive.</p>` }
   </div>`;
   g.classList.add('on');
