@@ -469,7 +469,7 @@ body.dark{ --rail-bg1:#241d12; --rail-bg2:#16110a; --rail-glow:rgba(236,196,106,
 .sess-fill{height:100%;border-radius:4px;transition:width .3s}
 @media(max-width:560px){ .sess-grid{grid-template-columns:1fr} }
 /* news */
-.news-wrap{padding:0}
+.news-wrap{padding:0;overflow:auto;-webkit-overflow-scrolling:touch}
 .news-wrap iframe{width:100%!important;border:none!important;background:transparent;display:block}
 #financialjuice-eco-widget-container,#financialjuice-news-widget-container{width:100%}
 .news-intro-t{font-family:'Space Grotesk';font-size:17px;font-weight:600}
@@ -822,7 +822,7 @@ window.addEventListener('hashchange',()=>go(location.hash.replace('#','')||'dash
 
 const NAVITEMS=[
   ['dashboard','Dashboard',I.dash],['journal','Journal',I.journal],['calendar','Calendar',I.cal],
-  ['analytics','Analytics',I.chart],['analyst','Analyst',I.spark],['news','News',I.news],['library','Library',I.book],['settings','Settings',I.gear]
+  ['analytics','Analytics',I.chart],['analyst','Review',I.spark],['news','News',I.news],['library','Library',I.book],['settings','Settings',I.gear]
 ];
 function buildNav(){
   document.getElementById('nav').innerHTML = NAVITEMS.map(n=>
@@ -1440,7 +1440,7 @@ async function dayDetail(ds){
       <div class="ci"><div class="l">Win rate</div><div class="v mono">${a.winRate.toFixed(0)}%</div></div>
       <div class="ci"><div class="l">Discipline</div><div class="v mono" style="color:${disc>=80?'var(--up)':disc>=50?'var(--gold)':'var(--down)'}">${disc}</div></div>
     </div>
-    <div class="panel"><div class="panel-b" style="padding:0"><table><tbody>${list.map(rowJ).join('')}</tbody></table></div></div>`;
+    <div class="panel"><div class="panel-b" style="padding:0;overflow-x:auto"><table style="min-width:560px"><tbody>${list.map(rowJ).join('')}</tbody></table></div></div>`;
   openModal(new Date(ds+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'}),body,
     [`<button class="btn gold" onclick="closeModal('detailScrim')">Done</button>`],'','detailScrim');
 }
@@ -1540,32 +1540,97 @@ const WEEK_SYS = "You are a trading-performance coach writing a SHORT weekly rev
 function weekStart(){ const n=new Date(); const ws=new Date(n); const day=(ws.getDay()+6)%7; ws.setDate(ws.getDate()-day); ws.setHours(0,0,0,0); return ws; }
 function weekKey(){ return weekStart().toISOString().slice(0,10); }
 function weekTrades(){ const ws=weekStart(); return TRADES.filter(t=>new Date(t.date+'T00:00:00')>=ws); }
+function localAnalysis(list){
+  const a=agg(list);
+  const sessions=groupBy(list,t=>session(t.entryTime)).filter(r=>r.k!=='Unknown'&&r.k!=='—');
+  const setups=groupBy(list,t=>setupName(t.setupId)).filter(r=>r.k!=='—');
+  const wds=groupBy(list,t=>['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][weekday(t.date)]);
+  const dm=dailyMap(list); const st=streaks();
+  const rr = a.avgLoss>0 ? a.avgWin/a.avgLoss : null;
+  const strengths=[],leaks=[],actions=[];
+  const emoTags=['Revenge trade','Tilt','FOMO','Overtrading','Impulsive entry','Moved stop','No plan'];
+  const revenge=list.filter(t=>(t.psych||[]).some(p=>emoTags.includes(p)));
+  const revP=revenge.length?agg(revenge).pnl:0;
+
+  // strengths
+  if(a.pnl>0) strengths.push(`Net positive: ${dollars(a.pnl)} over ${a.n} trades (${dollars(a.expectancy)}/trade expectancy).`);
+  if(a.pf!==Infinity && a.pf>=1.3) strengths.push(`Profit factor ${a.pf.toFixed(2)} — winners clearly outweigh losers.`);
+  else if(a.pf===Infinity && a.win>0) strengths.push(`No losing trades in this sample (${a.win} wins).`);
+  if((a.win+a.loss)>=5 && a.winRate>=55) strengths.push(`Win rate ${a.winRate.toFixed(0)}% (${a.win}W / ${a.loss}L).`);
+  if(rr!=null && rr>=1.5) strengths.push(`Reward:risk ${rr.toFixed(1)}× — avg win ${fmt$(a.avgWin)} vs avg loss ${fmt$(a.avgLoss)}.`);
+  if(sessions.length && sessions[0].pnl>0){ const tot=sessions.reduce((s,r)=>s+Math.max(0,r.pnl),0); if(tot>0) strengths.push(`${sessions[0].k} is your edge — ${dollars(sessions[0].pnl)} (${Math.round(Math.max(0,sessions[0].pnl)/tot*100)}% of gross profit).`); }
+  const goodSetup=setups.filter(r=>r.pnl>0&&r.n>=2)[0];
+  if(goodSetup) strengths.push(`"${goodSetup.k}" works — ${goodSetup.n} trades, ${goodSetup.wr.toFixed(0)}% win, ${dollars(goodSetup.pnl)}.`);
+  const disc=list.filter(t=>(t.psych||[]).some(p=>['Disciplined','Followed plan','Patient entry','Confident execution'].includes(p)));
+  if(disc.length>=Math.max(3,list.length*0.4)) strengths.push(`Discipline is showing — ${disc.length} trades tagged disciplined / followed-plan.`);
+  if(st.maxWin>=3) strengths.push(`Best win streak: ${st.maxWin} in a row.`);
+
+  // leaks
+  if(a.pnl<0) leaks.push(`Net negative: ${dollars(a.pnl)} (${dollars(a.expectancy)}/trade).`);
+  if(a.pf!==Infinity && a.pf<1 && a.loss>0) leaks.push(`Profit factor ${a.pf.toFixed(2)} — losses outweigh wins right now.`);
+  if(rr!=null && rr<1) leaks.push(`Reward:risk upside-down — avg loss ${fmt$(a.avgLoss)} is bigger than avg win ${fmt$(a.avgWin)} (cutting winners or letting losers run).`);
+  const badSetup=setups.filter(r=>r.pnl<0&&r.n>=2).sort((x,y)=>x.pnl-y.pnl)[0];
+  if(badSetup) leaks.push(`"${badSetup.k}" has negative expectancy — ${badSetup.n} trades, ${dollars(badSetup.pnl)}.`);
+  const badSession=sessions.filter(r=>r.pnl<0).sort((x,y)=>x.pnl-y.pnl)[0];
+  if(badSession) leaks.push(`${badSession.k} session is bleeding — ${dollars(badSession.pnl)} over ${badSession.n} trades.`);
+  const badWd=wds.filter(r=>r.pnl<0&&r.n>=2).sort((x,y)=>x.pnl-y.pnl)[0];
+  if(badWd) leaks.push(`${badWd.k}s are your weakest day — ${dollars(badWd.pnl)} across ${badWd.n} trades.`);
+  if(revenge.length) leaks.push(`${revenge.length} emotional trade${revenge.length>1?'s':''} (revenge/tilt/FOMO/moved-stop) totalling ${dollars(revP)}.`);
+  const dayCounts={}; list.forEach(t=>{dayCounts[t.date]=(dayCounts[t.date]||0)+1;});
+  const overDays=Object.entries(dayCounts).filter(([d,c])=>c>=5 && (dm[d]||0)<0);
+  if(overDays.length) leaks.push(`${overDays.length} day(s) with 5+ trades ended in the red — overtrading signal.`);
+  if(st.maxLoss>=3) leaks.push(`Worst losing streak: ${st.maxLoss} in a row — guard against tilt after two losses.`);
+  if(st.maxDD>0 && a.pnl>0 && st.maxDD>Math.abs(a.pnl)*0.6) leaks.push(`Drawdown of ${fmt$(st.maxDD)} peak-to-trough is large versus your net gain.`);
+
+  // actions
+  if(badSetup) actions.push(`Pause or re-rule "${badSetup.k}" until it proves an edge.`);
+  if(badSession) actions.push(`Skip the ${badSession.k} session — or cut size there hard.`);
+  if(revenge.length && revP<0) actions.push(`No re-entry for 15 min after a loss; set a daily loss limit in Settings → Risk & goals.`);
+  if(rr!=null && rr<1) actions.push(`Demand a minimum 1.5:1 reward:risk; pass on setups that don't offer it.`);
+  if(overDays.length) actions.push(`Cap trades per day and set Max trades/day in Settings.`);
+  if(goodSetup) actions.push(`Concentrate size on "${goodSetup.k}"${sessions[0]&&sessions[0].pnl>0?' during '+sessions[0].k:''}.`);
+
+  // grade
+  let score=50;
+  score += a.pnl>0?12:-12;
+  if(a.pf!==Infinity){ if(a.pf>=1.5)score+=14; else if(a.pf>=1.2)score+=8; else if(a.pf<1)score-=14; } else if(a.win>0) score+=10;
+  if((a.win+a.loss)>=5){ if(a.winRate>=55)score+=6; else if(a.winRate<40)score-=6; }
+  if(rr!=null){ if(rr>=1.5)score+=8; else if(rr<1)score-=8; }
+  if(revP<0) score-=8;
+  score=Math.max(0,Math.min(100,score));
+  const grade= score>=88?'A':score>=80?'A-':score>=72?'B+':score>=64?'B':score>=56?'B-':score>=48?'C+':score>=40?'C':score>=32?'D':'F';
+
+  let headline;
+  if(list.length<8) headline=`Early sample (${a.n} trades) — read this as directional, not statistically firm. Currently net ${dollars(a.pnl)}.`;
+  else if(a.pnl>0 && a.pf>=1.3) headline=`Profitable process: ${dollars(a.pnl)} at a ${a.pf===Infinity?'∞':a.pf.toFixed(2)} profit factor. Protect what works, plug the leaks.`;
+  else if(a.pnl>0) headline=`Net green (${dollars(a.pnl)}) but margins are thin — the leaks below are capping your edge.`;
+  else headline=`Currently net ${dollars(a.pnl)} — the leaks below are the gap between red and green.`;
+
+  const cand=[];
+  if(badSetup) cand.push([Math.abs(badSetup.pnl), `Biggest leak: "${badSetup.k}" (${dollars(badSetup.pnl)}). Fix or drop it before anything else.`]);
+  if(badSession) cand.push([Math.abs(badSession.pnl), `Biggest leak: the ${badSession.k} session (${dollars(badSession.pnl)}). Stop trading it for two weeks and compare.`]);
+  if(revP<0) cand.push([Math.abs(revP), `Emotional trades cost ${dollars(revP)} — a strict no-revenge rule is your highest-impact fix.`]);
+  cand.sort((x,y)=>y[0]-x[0]);
+  const focus = cand.length?cand[0][1]:(a.pnl>0?`Keep doing what's working and scale size gradually on your best setup and session.`:`Trade only setups with a clear edge and 1.5:1+ reward:risk until expectancy turns positive.`);
+
+  return {grade, headline, strengths:strengths.slice(0,5), leaks:leaks.slice(0,5), actions:actions.slice(0,5), focus};
+}
+function localWeekly(wt){ const a=localAnalysis(wt); return {grade:a.grade, summary:a.headline, wins:a.strengths, improve:a.leaks, focus:a.focus}; }
 function vAnalyst(el){
-  el.innerHTML=`<div class="vhead"><div><h1>AI Analyst</h1><div class="sub">Claude reviews your journal for edge and leaks</div></div></div>`;
-  if(TRADES.length<3){ el.insertAdjacentHTML('beforeend',emptyState('chart','Not enough to analyze yet','Log at least a few XAUUSD trades — ideally tagged with setups and psychology — and the analyst can pinpoint what is making and losing you money.','Log a trade','openTrade()')); return; }
+  el.innerHTML=`<div class="vhead"><div><h1>Performance review</h1><div class="sub">Instant coaching from your trades — no AI, no cost</div></div></div>`;
+  if(TRADES.length<3){ el.insertAdjacentHTML('beforeend',emptyState('chart','Not enough to analyze yet','Log at least a few XAUUSD trades — ideally tagged with setups and psychology — and your review will pinpoint what is making and losing you money.','Log a trade','openTrade()')); return; }
   el.insertAdjacentHTML('beforeend',`<div class="panel">
-    <div class="panel-h"><h3>${sI(I.spark,'')} This week's review</h3>
-      <div style="display:flex;gap:8px">
-        <button class="btn ghost" onclick="copyWeekly()" style="padding:7px 11px">Copy for Claude</button>
-        <button class="btn gold" onclick="runWeekly()" style="padding:7px 13px">${(AI_WEEK&&AI_WEEK.obj&&AI_WEEK.week===weekKey())?'Refresh':'Write review'}</button>
-      </div></div>
+    <div class="panel-h"><h3>${sI(I.spark,'')} This week</h3>
+      <button class="btn ghost" onclick="weeklyManual()" style="padding:7px 11px">Claude's take (free)</button></div>
     <div id="weeklyBody" class="panel-b"></div></div>`);
   renderWeeklyBody();
   el.insertAdjacentHTML('beforeend',`<div class="panel" style="margin-top:14px">
-    <div class="panel-h"><h3>${sI(I.spark,'')} Full performance analysis</h3>
-      <div style="display:flex;gap:8px">
-        <button class="btn ghost" onclick="copyAnalystPrompt()" style="padding:7px 11px">Copy for Claude</button>
-        <button class="btn gold" onclick="runAnalyst()" style="padding:7px 13px">${AI&&AI.obj?'Re-analyze':'Generate'}</button>
-      </div></div>
+    <div class="panel-h"><h3>${sI(I.spark,'')} Full review</h3>
+      <button class="btn ghost" onclick="analystManual()" style="padding:7px 11px">Claude's take (free)</button></div>
     <div id="analystBody"></div></div>`);
   const box=document.getElementById('analystBody');
-  if(AI && AI.obj){
-    box.innerHTML=renderAnalysis(AI.obj, AI.ts, AI.n);
-    if(AI.n!==TRADES.length)
-      box.insertAdjacentHTML('afterbegin',`<div style="padding:16px 17px 0"><div class="notice">Your data changed since this analysis (${AI.n} → ${TRADES.length} trades). Re-analyze for an update.</div></div>`);
-  } else {
-    box.innerHTML=`<div class="panel-b"><div class="an-intro">${sI(I.spark)}<div><div class="an-intro-t">Ready when you are</div><p class="mut" style="font-size:13px;margin-top:3px;line-height:1.55">Claude will read your ${TRADES.length} trades — sessions, setups, R-multiples, streaks, drawdown and psychology tags — and grade what is working, what is leaking, and the single highest-impact thing to fix.</p></div></div></div>`;
-  }
+  if(AI && AI.obj && AI.n===TRADES.length){ box.innerHTML=renderAnalysis(AI.obj, AI.ts, AI.n, 'claude'); }
+  else { box.innerHTML=renderAnalysis(localAnalysis(TRADES), Date.now(), TRADES.length, 'local'); }
 }
 function analystLoading(){ return `<div class="an-loading"><div class="an-spinner"></div><p>Claude is analyzing your ${TRADES.length} trades…</p></div>`; }
 function timeAgo(ts){ if(!ts) return 'just now'; const s=(Date.now()-ts)/1000;
@@ -1626,11 +1691,10 @@ async function runAnalyst(){
     box.innerHTML=`<div class="empty" style="padding:34px 22px">
       <h4>Couldn't reach the analyst</h4>
       <p>${esc(String(e.message||e))}.</p>
-      <p style="margin-top:-8px">If you're running this file on your own (not inside claude.ai), the live call needs your Anthropic API key — add it in Settings. Or analyze manually with one tap.</p>
+      <p style="margin-top:-8px">No problem — you can run it free through your normal claude.ai chat: copy the prompt, paste it to Claude, then paste Claude's reply back here.</p>
       <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
-        <button class="btn gold" onclick="copyAnalystPrompt()">${sI(I.spark)}Copy for Claude</button>
-        <button class="btn ghost" onclick="go('settings')">Add API key</button>
-        <button class="btn ghost" onclick="runAnalyst()">Retry</button>
+        <button class="btn gold" onclick="analystManual()">${sI(I.spark)}Use Claude (free)</button>
+        <button class="btn ghost" onclick="runAnalyst()">Retry live</button>
       </div></div>`;
   }
 }
@@ -1642,7 +1706,45 @@ async function copyAnalystPrompt(){
       [`<button class="btn gold" onclick="closeModal('scrim')">Done</button>`],'wide');
   }
 }
-function renderAnalysis(o, ts, n){
+function parseJSONloose(text){
+  if(!text) return null;
+  let t=String(text).trim().replace(/```json/gi,'').replace(/```/g,'').trim();
+  const a=t.indexOf('{'), b=t.lastIndexOf('}');
+  if(a>=0&&b>a) t=t.slice(a,b+1);
+  try{ return JSON.parse(t); }catch(e){ return null; }
+}
+function analystManual(){
+  const prompt=ANALYST_SYS+"\n\nTrader data (JSON):\n"+JSON.stringify(buildPayload(),null,2);
+  openModal('Analyze with Claude — free', `
+    <p class="mut" style="font-size:13px;line-height:1.55;margin-bottom:9px"><b style="color:var(--ink)">1.</b> Copy this and paste it into a new <a href="https://claude.ai" target="_blank" rel="noopener" class="gold" style="font-weight:600">claude.ai</a> chat (free).</p>
+    <textarea class="inp mono" id="anPrompt" style="min-height:120px;font-size:11px" readonly onclick="this.select()">${esc(prompt)}</textarea>
+    <button class="btn ghost" style="margin:8px 0 16px" onclick="navigator.clipboard.writeText(document.getElementById('anPrompt').value).then(()=>toast('Copied'))">Copy prompt</button>
+    <p class="mut" style="font-size:13px;line-height:1.55;margin-bottom:9px"><b style="color:var(--ink)">2.</b> Paste Claude's full reply here:</p>
+    <textarea class="inp mono" id="anReply" style="min-height:110px;font-size:11px" placeholder="Paste Claude's answer…"></textarea>
+  `, [`<button class="btn ghost" onclick="closeModal('scrim')">Cancel</button>`,`<button class="btn gold" onclick="applyAnalystReply()">Show my analysis</button>`], 'wide');
+}
+async function applyAnalystReply(){
+  const obj=parseJSONloose(val('anReply'));
+  if(!obj){ toast("Couldn't read that — paste Claude's full JSON reply"); return; }
+  AI={obj,ts:Date.now(),n:TRADES.length}; await sSet('tj_ai',AI); closeModal('scrim'); go('analyst'); toast('Analysis saved');
+}
+function weeklyManual(){
+  const wt=weekTrades(); if(!wt.length){ toast('No trades this week yet'); return; }
+  const prompt=WEEK_SYS+"\n\nWeek data (JSON):\n"+JSON.stringify(buildWeekPayload(),null,2);
+  openModal('Weekly review with Claude — free', `
+    <p class="mut" style="font-size:13px;line-height:1.55;margin-bottom:9px"><b style="color:var(--ink)">1.</b> Copy this into a <a href="https://claude.ai" target="_blank" rel="noopener" class="gold" style="font-weight:600">claude.ai</a> chat (free).</p>
+    <textarea class="inp mono" id="wkPrompt" style="min-height:110px;font-size:11px" readonly onclick="this.select()">${esc(prompt)}</textarea>
+    <button class="btn ghost" style="margin:8px 0 16px" onclick="navigator.clipboard.writeText(document.getElementById('wkPrompt').value).then(()=>toast('Copied'))">Copy prompt</button>
+    <p class="mut" style="font-size:13px;line-height:1.55;margin-bottom:9px"><b style="color:var(--ink)">2.</b> Paste Claude's reply:</p>
+    <textarea class="inp mono" id="wkReply" style="min-height:100px;font-size:11px" placeholder="Paste Claude's answer…"></textarea>
+  `, [`<button class="btn ghost" onclick="closeModal('scrim')">Cancel</button>`,`<button class="btn gold" onclick="applyWeeklyReply()">Show review</button>`], 'wide');
+}
+async function applyWeeklyReply(){
+  const obj=parseJSONloose(val('wkReply'));
+  if(!obj){ toast("Couldn't read that — paste Claude's full JSON reply"); return; }
+  AI_WEEK={obj,ts:Date.now(),week:weekKey(),n:weekTrades().length}; await sSet('tj_aiweek',AI_WEEK); closeModal('scrim'); go('analyst'); toast('Weekly review saved');
+}
+function renderAnalysis(o, ts, n, src){
   const sec=(title,items,kind)=> (Array.isArray(items)&&items.length)?
     `<div class="an-sec"><div class="an-h ${kind}">${esc(title)}</div>${items.map(x=>`<div class="an-item ${kind}"><span class="an-dot"></span><span>${esc(x)}</span></div>`).join('')}</div>`:'';
   return `<div class="panel-b">
@@ -1656,7 +1758,7 @@ function renderAnalysis(o, ts, n){
       ${sec("What's costing you",o.leaks,'bad')}
     </div>
     ${sec('Do next',o.actions,'act')}
-    <div class="an-foot">Generated by Claude from ${n} logged trade${n===1?'':'s'} · ${timeAgo(ts)} · for review only, not financial advice</div>
+    <div class="an-foot">${src==='local'?`Computed from your ${n} logged trade${n===1?'':'s'} · updates as you log · review only, not financial advice`:`Written by Claude from ${n} logged trade${n===1?'':'s'} · ${timeAgo(ts)} · review only, not financial advice`}</div>
   </div>`;
 }
 function buildWeekPayload(){
@@ -1673,12 +1775,12 @@ function buildWeekPayload(){
     trades:wt.map(t=>({date:t.date,dir:t.direction,pnl:Math.round(+t.pnl||0),r:t.r==null?null:r2(t.r),setup:setupName(t.setupId),session:session(t.entryTime),psych:(t.psych||[])}))
   };
 }
-function renderWeekly(o, ts){
+function renderWeekly(o, ts, src){
   const sec=(title,items,kind)=>(Array.isArray(items)&&items.length)?`<div class="an-sec"><div class="an-h ${kind}">${esc(title)}</div>${items.map(x=>`<div class="an-item ${kind}"><span class="an-dot"></span><span>${esc(x)}</span></div>`).join('')}</div>`:'';
   return `<div class="an-top"><div class="an-grade">${esc(o.grade||'—')}</div><div class="an-head">${esc(o.summary||o.headline||'')}</div></div>
     ${o.focus?`<div class="an-focus"><span class="an-focus-l">Next week</span>${esc(o.focus)}</div>`:''}
     <div class="an-grid">${sec('Went well',o.wins,'good')}${sec('Tighten up',o.improve,'bad')}</div>
-    <div class="an-foot">Weekly review by Claude · ${timeAgo(ts)} · not financial advice</div>`;
+    <div class="an-foot">${src==='local'?'Computed from this week · updates as you log':'Weekly review by Claude · '+timeAgo(ts)} · not financial advice</div>`;
 }
 function renderWeeklyBody(){
   const box=document.getElementById('weeklyBody'); if(!box) return;
@@ -1691,9 +1793,9 @@ function renderWeeklyBody(){
     ${kpi('Worst day',days.length?dollars(worst[1]):'—',(days.length&&worst[1]<0)?'down':'mut',days.length?fdate(worst[0]):'—','var(--down)')}
   </div>`;
   let review;
-  if(AI_WEEK && AI_WEEK.obj && AI_WEEK.week===weekKey()) review=renderWeekly(AI_WEEK.obj, AI_WEEK.ts);
+  if(AI_WEEK && AI_WEEK.obj && AI_WEEK.week===weekKey()) review=renderWeekly(AI_WEEK.obj, AI_WEEK.ts, 'claude');
   else if(!wt.length) review=`<p class="mut" style="font-size:13px">No trades logged this week yet.</p>`;
-  else review=`<p class="mut" style="font-size:13px;line-height:1.55">Tap <b style="color:var(--ink)">Write review</b> — Claude summarises your week: what went well, what to tighten, and one focus for next week.</p>`;
+  else review=renderWeekly(localWeekly(wt), Date.now(), 'local');
   box.innerHTML=stats+review;
 }
 async function runWeekly(){
@@ -1725,16 +1827,14 @@ function newsColors(){ return { bg:'0d0f13', font:'d9c79e', mode:'Dark' }; }
 function vNews(el){
   el.innerHTML=`<div class="vhead"><div><h1>News</h1><div class="sub">FinancialJuice economic calendar &amp; live headlines</div></div>
     <button class="btn ghost" onclick="go('news')">Refresh</button></div>`;
-  el.insertAdjacentHTML('beforeend',`<div class="panel news-terminal"><div class="nt-grid">
-    <div class="nt-col"><div class="nt-h">Economic calendar</div><div class="news-wrap" id="newsCal"></div></div>
-    <div class="nt-col"><div class="nt-h">Headlines</div><div class="news-wrap" id="newsHead"></div></div>
-  </div></div>`);
+  el.insertAdjacentHTML('beforeend',`
+    <div class="panel news-terminal" style="margin-bottom:14px"><div class="nt-h">Economic calendar</div><div class="news-wrap" id="newsCal"></div></div>
+    <div class="panel news-terminal"><div class="nt-h">Headlines</div><div class="news-wrap" id="newsHead"></div></div>`);
   const calWrap=document.getElementById('newsCal'), headWrap=document.getElementById('newsHead');
-  const h=Math.max(640, Math.round(window.innerHeight-200));
-  const cw=Math.max(320, Math.round(calWrap.clientWidth||500));
-  const hw=Math.max(320, Math.round(headWrap.clientWidth||500));
-  buildFJWidget(calWrap,'financialjuice-eco-widget-container','ECOCAL','table',cw,h);
-  buildFJWidget(headWrap,'financialjuice-news-widget-container','NEWS','Dark',hw,h);
+  const cw=Math.max(300, Math.floor(calWrap.clientWidth)-2);
+  const hw=Math.max(300, Math.floor(headWrap.clientWidth)-2);
+  buildFJWidget(calWrap,'financialjuice-eco-widget-container','ECOCAL','table',cw,560);
+  buildFJWidget(headWrap,'financialjuice-news-widget-container','NEWS','Dark',hw,520);
 }
 function buildFJWidget(wrap, containerId, widgetType, mode, w, h){
   if(!wrap) return;
@@ -1977,8 +2077,8 @@ function vSettings(el){
       <div class="field" style="margin-bottom:0"><label>Max drawdown limit ($ from peak equity)</label><input class="inp mono" type="number" id="set_dd" value="${S.ddLimit||''}" placeholder="e.g. 1000"></div>
     </div><div class="modal-f" style="border-top:none;padding-top:0"><button class="btn gold" onclick="saveRisk()">Save risk &amp; goals</button></div></div>
 
-    <div class="panel" style="max-width:520px;margin-top:16px"><div class="panel-h"><h3>AI Analyst</h3></div><div class="panel-b">
-      <p class="mut" style="font-size:12.5px;margin-bottom:14px;line-height:1.55">The AI Analyst calls Claude to review your journal. Inside claude.ai it works automatically. If you run this file on your own (downloaded), paste an Anthropic API key — it's stored only on this device and sent only to Anthropic. You can also use "Copy for Claude" on the Analyst tab with no key at all.</p>
+    <div class="panel" style="max-width:520px;margin-top:16px"><div class="panel-h"><h3>Performance review</h3></div><div class="panel-b">
+      <p class="mut" style="font-size:12.5px;margin-bottom:14px;line-height:1.55">Your Review tab is computed instantly from your own trades — free, private, no AI needed. If you ever want Claude's written take, the "Claude's take (free)" button lets you run it through your normal claude.ai chat. An Anthropic API key is optional (only for one-click live calls, which bill per use).</p>
       <div class="field" style="margin-bottom:10px"><label>Anthropic API key (optional)</label><input class="inp mono" type="password" id="set_aikey" value="${esc(AIKEY||'')}" placeholder="sk-ant-..." autocomplete="off"></div>
       <div style="display:flex;gap:10px;align-items:center"><button class="btn gold" onclick="saveAIKey()">Save key</button><a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" class="gold" style="font-size:12px;font-weight:600">Get a key →</a></div>
     </div></div>
