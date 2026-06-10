@@ -444,6 +444,18 @@ body.dark{ --rail-bg1:#241d12; --rail-bg2:#16110a; --rail-glow:rgba(236,196,106,
 @keyframes spin{to{transform:rotate(360deg)}}
 .an-loading p{font-size:13px;color:var(--mut)}
 @media(max-width:680px){ .an-grid{grid-template-columns:1fr} }
+.jfilter{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.jfilter .inp{width:auto;flex:0 0 auto;min-width:140px;padding:9px 11px}
+.jfilter .btn{flex:0 0 auto}
+.risk-banner{display:flex;gap:11px;align-items:flex-start;background:var(--down-bg);border:1px solid color-mix(in srgb,var(--down) 35%,transparent);border-radius:14px;padding:13px 16px;margin-bottom:14px;font-size:13px;color:var(--down);font-weight:600;box-shadow:var(--shadow);line-height:1.5}
+.risk-banner svg{width:18px;height:18px;flex:0 0 18px;margin-top:1px}
+.risk-row{margin-bottom:13px}
+.risk-row:last-child{margin-bottom:0}
+.risk-h{display:flex;justify-content:space-between;gap:8px;font-size:12px;margin-bottom:6px}
+.risk-h span:first-child{color:var(--mut);font-weight:600}
+.risk-h .mono{font-size:11.5px;font-weight:600}
+.risk-bar{height:7px;border-radius:5px;background:var(--surface2);overflow:hidden}
+.risk-fill{height:100%;border-radius:5px;transition:width .3s}
 /* session cards */
 .sess-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
 .sess{background:var(--surface2);border:1px solid var(--line);border-radius:13px;padding:14px 15px}
@@ -685,6 +697,7 @@ let SETUPS = [];   // {id,name,grade,desc}
 let TRADES = [];   // see openTrade
 let RANGE = 'all';
 let AI = null;
+let AI_WEEK = null;
 let AIKEY = '';
 let fjLoaded = false;
 let MT5_RELAY_URL = '';
@@ -734,6 +747,7 @@ async function loadApp(){
   SETUPS = await sGet('tj_setups', []);
   TRADES = await sGet('tj_trades', []);
   AI = await sGet('tj_ai', null);
+  AI_WEEK = await sGet('tj_aiweek', null);
   AIKEY = await sGet('tj_aikey', '');
   MT5_RELAY_URL = await sGet('tj_relayurl', '');
   MT5_RELAY_TOKEN = await sGet('tj_relaytoken', '');
@@ -906,6 +920,8 @@ function vDashboard(el){
     </div>`;
   if(!TRADES.length){ el.insertAdjacentHTML('beforeend', emptyState('journal','Start your journal','Your equity curve, win rate and stats all begin at zero. Log your first XAUUSD trade — or sync from MT5 — to start building your edge.','Log first trade','openTrade()')); return; }
 
+  const _rw=riskWarnings(); if(_rw.length) el.insertAdjacentHTML('beforeend', `<div class="risk-banner">${sI(I.bolt)}<div>${_rw.map(esc).join('<br>')}</div></div>`);
+
   const eqAll=(S.startBal||0)+TRADES.reduce((s,t)=>s+(+t.pnl||0),0);
   const net=eqAll-(S.startBal||0);
   const today=new Date().toISOString().slice(0,10);
@@ -950,6 +966,8 @@ function vDashboard(el){
     }).join('');
     el.insertAdjacentHTML('beforeend',`<div class="panel" style="margin-bottom:14px"><div class="panel-h"><h3>Session performance</h3><a href="#analytics" class="mut" style="font-size:12px">More →</a></div><div class="panel-b"><div class="sess-grid">${tiles}</div></div></div>`);
   })();
+
+  el.insertAdjacentHTML('beforeend', riskCard());
 
   // recent + month
   el.insertAdjacentHTML('beforeend',`
@@ -1013,24 +1031,43 @@ function recentTable(list){
 function setupName(id){ const s=SETUPS.find(x=>x.id===id); return s?s.name:'—'; }
 
 /* ============================== JOURNAL ============================== */
-let JFILTER='all';
+let JF={q:'',dir:'',out:'',sess:'',setup:'',psy:''};
 function vJournal(el){
   el.innerHTML=`<div class="vhead"><div><h1>Trade journal</h1><div class="sub">${TRADES.length} XAUUSD trade${TRADES.length===1?'':'s'} logged</div></div>
     <div style="display:flex;gap:8px"><button class="btn ghost" onclick="openImport()">Sync MT5</button><button class="btn gold" onclick="openTrade()">${sI(I.plus)}Log trade</button></div></div>`;
   if(!TRADES.length){ el.insertAdjacentHTML('beforeend',emptyState('journal','No trades logged','Record entries, exits, your setup, screenshots and psychology notes. Everything feeds your analytics.','Log your first trade','openTrade()')); return; }
-  const filt=['all','long','short','win','loss'];
-  el.insertAdjacentHTML('beforeend',`<div class="seg" style="margin-bottom:14px">${filt.map(f=>`<button class="${JFILTER===f?'on':''}" onclick="JFILTER='${f}';go('journal')">${f[0].toUpperCase()+f.slice(1)}</button>`).join('')}</div>`);
-  let list=sorted().reverse();
-  if(JFILTER==='long') list=list.filter(t=>t.direction==='long');
-  if(JFILTER==='short') list=list.filter(t=>t.direction==='short');
-  if(JFILTER==='win') list=list.filter(t=>+t.pnl>0);
-  if(JFILTER==='loss') list=list.filter(t=>+t.pnl<0);
-  el.insertAdjacentHTML('beforeend',`<div class="panel"><div class="panel-b" style="padding:0;overflow-x:auto">
+  const setupsOpts=SETUPS.map(s=>`<option value="${s.id}" ${JF.setup===s.id?'selected':''}>${esc(s.name)}</option>`).join('');
+  const psyOpts=[...PSYCH.good,...PSYCH.bad].map(p=>`<option value="${esc(p)}" ${JF.psy===p?'selected':''}>${esc(p)}</option>`).join('');
+  el.insertAdjacentHTML('beforeend',`<div class="panel" style="margin-bottom:14px"><div class="panel-b jfilter">
+    <input class="inp" id="jq" placeholder="Search notes, setup, tags…" value="${esc(JF.q)}" oninput="JF.q=this.value;applyJournalFilter()" style="flex:2 1 200px">
+    <select class="inp" onchange="JF.dir=this.value;applyJournalFilter()"><option value="">Any direction</option><option value="long" ${JF.dir==='long'?'selected':''}>Long</option><option value="short" ${JF.dir==='short'?'selected':''}>Short</option></select>
+    <select class="inp" onchange="JF.out=this.value;applyJournalFilter()"><option value="">Any result</option><option value="win" ${JF.out==='win'?'selected':''}>Wins</option><option value="loss" ${JF.out==='loss'?'selected':''}>Losses</option><option value="be" ${JF.out==='be'?'selected':''}>Breakeven</option></select>
+    <select class="inp" onchange="JF.sess=this.value;applyJournalFilter()"><option value="">Any session</option><option value="Asia" ${JF.sess==='Asia'?'selected':''}>Asia</option><option value="London" ${JF.sess==='London'?'selected':''}>London</option><option value="New York" ${JF.sess==='New York'?'selected':''}>New York</option></select>
+    <select class="inp" onchange="JF.setup=this.value;applyJournalFilter()"><option value="">Any setup</option>${setupsOpts}</select>
+    <select class="inp" onchange="JF.psy=this.value;applyJournalFilter()"><option value="">Any psychology</option>${psyOpts}</select>
+    <button class="btn ghost" onclick="clearJF()">Clear</button>
+  </div></div>`);
+  el.insertAdjacentHTML('beforeend',`<div class="panel"><div class="panel-h"><h3 id="jcount"></h3></div><div class="panel-b" style="padding:0;overflow-x:auto">
     <table><thead><tr>
       <th>Date</th><th>Dir</th><th class="hide-m">Setup</th><th style="text-align:right">Entry</th>
       <th style="text-align:right" class="hide-m">Exit</th><th style="text-align:right">Lots</th>
       <th style="text-align:right">R</th><th style="text-align:right">P&L</th><th></th>
-    </tr></thead><tbody>${list.map(rowJ).join('')}</tbody></table></div></div>`);
+    </tr></thead><tbody id="jbody"></tbody></table></div></div>`);
+  applyJournalFilter();
+}
+function clearJF(){ JF={q:'',dir:'',out:'',sess:'',setup:'',psy:''}; go('journal'); }
+function applyJournalFilter(){
+  let list=sorted().reverse(); const f=JF;
+  if(f.dir) list=list.filter(t=>t.direction===f.dir);
+  if(f.out==='win') list=list.filter(t=>+t.pnl>0);
+  else if(f.out==='loss') list=list.filter(t=>+t.pnl<0);
+  else if(f.out==='be') list=list.filter(t=>(+t.pnl||0)===0);
+  if(f.sess) list=list.filter(t=>session(t.entryTime)===f.sess);
+  if(f.setup) list=list.filter(t=>t.setupId===f.setup);
+  if(f.psy) list=list.filter(t=>(t.psych||[]).includes(f.psy));
+  if(f.q){ const q=f.q.toLowerCase(); list=list.filter(t=> (t.notesPre||'').toLowerCase().includes(q)||(t.notesPost||'').toLowerCase().includes(q)||setupName(t.setupId).toLowerCase().includes(q)||(t.strats||[]).join(' ').toLowerCase().includes(q)||(t.psych||[]).join(' ').toLowerCase().includes(q)); }
+  const body=document.getElementById('jbody'); if(body) body.innerHTML = list.length? list.map(rowJ).join('') : `<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:34px">No trades match these filters</td></tr>`;
+  const c=document.getElementById('jcount'); if(c){ const pnl=list.reduce((s,t)=>s+(+t.pnl||0),0); c.innerHTML=`${list.length} trade${list.length===1?'':'s'} · <span class="${cls(pnl)}" style="font-family:'JetBrains Mono'">${dollars(pnl)}</span>`; }
 }
 function rowJ(t){
   return `<tr class="click" onclick="openTradeDetail('${t.id}')">
@@ -1183,7 +1220,8 @@ async function saveTrade(){
   await sSet('tj_trades',TRADES);
   if(formShots.length) await sSet('tj_shots_'+t.id, formShots); else await sDel('tj_shots_'+t.id);
   closeModal('scrim'); refreshBal(); go(VIEW);
-  toast(editingId?'Trade updated':'Trade logged');
+  const _w=riskWarnings();
+  toast(_w.length ? '⚠ '+_w[0] : (editingId?'Trade updated':'Trade logged'));
 }
 
 /* delete with undo */
@@ -1470,11 +1508,23 @@ function renderInsights(wrap,list){
 }
 
 /* ============================== AI ANALYST ============================== */
+const WEEK_SYS = "You are a trading-performance coach writing a SHORT weekly review of a trader's XAUUSD week. Be specific, cite their numbers, encouraging but honest. No financial/investment advice or price calls. Respond with ONLY a minified JSON object: {\"grade\":\"single letter A-F\",\"summary\":\"2-3 sentence recap of the week\",\"wins\":[\"..\"],\"improve\":[\"..\"],\"focus\":\"one focus for next week\"}. Max 3 items per array.";
+function weekStart(){ const n=new Date(); const ws=new Date(n); const day=(ws.getDay()+6)%7; ws.setDate(ws.getDate()-day); ws.setHours(0,0,0,0); return ws; }
+function weekKey(){ return weekStart().toISOString().slice(0,10); }
+function weekTrades(){ const ws=weekStart(); return TRADES.filter(t=>new Date(t.date+'T00:00:00')>=ws); }
 function vAnalyst(el){
   el.innerHTML=`<div class="vhead"><div><h1>AI Analyst</h1><div class="sub">Claude reviews your journal for edge and leaks</div></div></div>`;
   if(TRADES.length<3){ el.insertAdjacentHTML('beforeend',emptyState('chart','Not enough to analyze yet','Log at least a few XAUUSD trades — ideally tagged with setups and psychology — and the analyst can pinpoint what is making and losing you money.','Log a trade','openTrade()')); return; }
   el.insertAdjacentHTML('beforeend',`<div class="panel">
-    <div class="panel-h"><h3>${sI(I.spark,'')} Performance analysis</h3>
+    <div class="panel-h"><h3>${sI(I.spark,'')} This week's review</h3>
+      <div style="display:flex;gap:8px">
+        <button class="btn ghost" onclick="copyWeekly()" style="padding:7px 11px">Copy for Claude</button>
+        <button class="btn gold" onclick="runWeekly()" style="padding:7px 13px">${(AI_WEEK&&AI_WEEK.obj&&AI_WEEK.week===weekKey())?'Refresh':'Write review'}</button>
+      </div></div>
+    <div id="weeklyBody" class="panel-b"></div></div>`);
+  renderWeeklyBody();
+  el.insertAdjacentHTML('beforeend',`<div class="panel" style="margin-top:14px">
+    <div class="panel-h"><h3>${sI(I.spark,'')} Full performance analysis</h3>
       <div style="display:flex;gap:8px">
         <button class="btn ghost" onclick="copyAnalystPrompt()" style="padding:7px 11px">Copy for Claude</button>
         <button class="btn gold" onclick="runAnalyst()" style="padding:7px 13px">${AI&&AI.obj?'Re-analyze':'Generate'}</button>
@@ -1581,6 +1631,66 @@ function renderAnalysis(o, ts, n){
     <div class="an-foot">Generated by Claude from ${n} logged trade${n===1?'':'s'} · ${timeAgo(ts)} · for review only, not financial advice</div>
   </div>`;
 }
+function buildWeekPayload(){
+  const wt=weekTrades(), A=agg(wt), r2=x=>Math.round((+x||0)*100)/100;
+  const grp=rows=>rows.map(r=>({name:r.k,trades:r.n,winRatePct:Math.round(r.wr),pnl:Math.round(r.pnl)}));
+  const m={}; wt.forEach(t=>(t.psych||[]).forEach(p=>{ if(!m[p])m[p]={tag:p,trades:0,pnl:0}; m[p].trades++; m[p].pnl+=(+t.pnl||0); }));
+  return {
+    week_start:weekKey(), instrument:'XAUUSD',
+    overall:{trades:A.n, netPnl:Math.round(A.pnl), winRatePct:Math.round(A.winRate), profitFactor:A.pf===Infinity?null:r2(A.pf), expectancyPerTrade:r2(A.expectancy), avgR:A.avgR==null?null:r2(A.avgR)},
+    bySession:grp(groupBy(wt,t=>session(t.entryTime))),
+    byWeekday:grp(groupBy(wt,t=>['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][weekday(t.date)])),
+    bySetup:grp(groupBy(wt,t=>setupName(t.setupId))),
+    psychology:Object.values(m).map(x=>({tag:x.tag,trades:x.trades,netPnl:Math.round(x.pnl)})),
+    trades:wt.map(t=>({date:t.date,dir:t.direction,pnl:Math.round(+t.pnl||0),r:t.r==null?null:r2(t.r),setup:setupName(t.setupId),session:session(t.entryTime),psych:(t.psych||[])}))
+  };
+}
+function renderWeekly(o, ts){
+  const sec=(title,items,kind)=>(Array.isArray(items)&&items.length)?`<div class="an-sec"><div class="an-h ${kind}">${esc(title)}</div>${items.map(x=>`<div class="an-item ${kind}"><span class="an-dot"></span><span>${esc(x)}</span></div>`).join('')}</div>`:'';
+  return `<div class="an-top"><div class="an-grade">${esc(o.grade||'—')}</div><div class="an-head">${esc(o.summary||o.headline||'')}</div></div>
+    ${o.focus?`<div class="an-focus"><span class="an-focus-l">Next week</span>${esc(o.focus)}</div>`:''}
+    <div class="an-grid">${sec('Went well',o.wins,'good')}${sec('Tighten up',o.improve,'bad')}</div>
+    <div class="an-foot">Weekly review by Claude · ${timeAgo(ts)} · not financial advice</div>`;
+}
+function renderWeeklyBody(){
+  const box=document.getElementById('weeklyBody'); if(!box) return;
+  const wt=weekTrades(), a=agg(wt), dm=dailyMap(wt), days=Object.entries(dm);
+  let best=days[0], worst=days[0]; days.forEach(d=>{ if(d[1]>best[1])best=d; if(d[1]<worst[1])worst=d; });
+  const stats=`<div class="grid kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+    ${kpi('Week P&L',dollars(a.pnl),cls(a.pnl),a.n+' trades','var(--gold)')}
+    ${kpi('Win rate',a.n?a.winRate.toFixed(0)+'%':'—','',`${a.win}W ${a.loss}L`,'var(--gold)')}
+    ${kpi('Best day',days.length?dollars(best[1]):'—','up',days.length?fdate(best[0]):'—','var(--up)')}
+    ${kpi('Worst day',days.length?dollars(worst[1]):'—',(days.length&&worst[1]<0)?'down':'mut',days.length?fdate(worst[0]):'—','var(--down)')}
+  </div>`;
+  let review;
+  if(AI_WEEK && AI_WEEK.obj && AI_WEEK.week===weekKey()) review=renderWeekly(AI_WEEK.obj, AI_WEEK.ts);
+  else if(!wt.length) review=`<p class="mut" style="font-size:13px">No trades logged this week yet.</p>`;
+  else review=`<p class="mut" style="font-size:13px;line-height:1.55">Tap <b style="color:var(--ink)">Write review</b> — Claude summarises your week: what went well, what to tighten, and one focus for next week.</p>`;
+  box.innerHTML=stats+review;
+}
+async function runWeekly(){
+  const wt=weekTrades(); if(!wt.length){ toast('No trades this week yet'); return; }
+  const box=document.getElementById('weeklyBody');
+  if(box) box.insertAdjacentHTML('beforeend',`<div class="an-loading"><div class="an-spinner"></div><p>Writing your weekly review…</p></div>`);
+  const headers={"Content-Type":"application/json"};
+  if(AIKEY){ headers["x-api-key"]=AIKEY; headers["anthropic-version"]="2023-06-01"; headers["anthropic-dangerous-direct-browser-access"]="true"; }
+  try{
+    const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers,body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:700,system:WEEK_SYS,messages:[{role:"user",content:"Week data (JSON):\n"+JSON.stringify(buildWeekPayload())}]})});
+    if(!res.ok){ let d=''; try{const j=await res.json(); d=(j.error&&j.error.message)||'';}catch(_){} throw new Error("HTTP "+res.status+(d?" — "+d:"")); }
+    const data=await res.json();
+    let text=(data.content||[]).map(b=>b&&b.type==='text'?b.text:'').join("\n").trim().replace(/```json/g,'').replace(/```/g,'').trim();
+    let obj=null; try{ obj=JSON.parse(text); }catch(e){}
+    if(obj){ AI_WEEK={obj,ts:Date.now(),week:weekKey(),n:wt.length}; await sSet('tj_aiweek',AI_WEEK); renderWeeklyBody(); }
+    else { renderWeeklyBody(); toast("Couldn't read the review — try Copy for Claude"); }
+  }catch(e){ renderWeeklyBody(); toast('Analyst unreachable — use Copy for Claude'); }
+}
+function copyWeekly(){
+  const wt=weekTrades(); if(!wt.length){ toast('No trades this week yet'); return; }
+  const txt=WEEK_SYS+"\n\nWeek data (JSON):\n"+JSON.stringify(buildWeekPayload(),null,2);
+  if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(()=>toast('Copied — paste into any Claude chat')).catch(()=>showCopyBox(txt));
+  else showCopyBox(txt);
+}
+function showCopyBox(txt){ openModal('Copy weekly review',`<p class="mut" style="font-size:13px;margin-bottom:10px">Copy this into a Claude chat:</p><textarea class="inp mono" style="min-height:260px;font-size:11px" onclick="this.select()">${esc(txt)}</textarea>`,[`<button class="btn gold" onclick="closeModal('scrim')">Done</button>`],'wide'); }
 
 /* ============================== NEWS ============================== */
 function newsColors(){ return { bg:'0d0f13', font:'d9c79e', mode:'Dark' }; }
@@ -1808,6 +1918,19 @@ function vSettings(el){
       <div class="field" style="margin-bottom:0"><label>Current equity</label><div class="mono ${cls(eq-(S.startBal||0))}" style="font-size:20px;font-weight:600">${fmt$(eq)}</div></div>
     </div><div class="modal-f" style="border-top:none;padding-top:0"><button class="btn gold" onclick="saveSettings()">Save settings</button></div></div>
 
+    <div class="panel" style="max-width:520px;margin-top:16px"><div class="panel-h"><h3>Risk &amp; goals</h3></div><div class="panel-b">
+      <p class="mut" style="font-size:12.5px;margin-bottom:14px;line-height:1.5">Set limits and targets (leave blank to disable). The dashboard tracks them and warns you when you cross a line — discipline you can see.</p>
+      <div class="row2">
+        <div class="field"><label>Daily loss limit ($)</label><input class="inp mono" type="number" id="set_dloss" value="${S.dailyLoss||''}" placeholder="e.g. 300"></div>
+        <div class="field"><label>Max trades / day</label><input class="inp mono" type="number" id="set_maxtr" value="${S.maxTrades||''}" placeholder="e.g. 5"></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>Weekly profit target ($)</label><input class="inp mono" type="number" id="set_wtgt" value="${S.weeklyTarget||''}" placeholder="e.g. 1000"></div>
+        <div class="field"><label>Monthly profit target ($)</label><input class="inp mono" type="number" id="set_mtgt" value="${S.monthlyTarget||''}" placeholder="e.g. 4000"></div>
+      </div>
+      <div class="field" style="margin-bottom:0"><label>Max drawdown limit ($ from peak equity)</label><input class="inp mono" type="number" id="set_dd" value="${S.ddLimit||''}" placeholder="e.g. 1000"></div>
+    </div><div class="modal-f" style="border-top:none;padding-top:0"><button class="btn gold" onclick="saveRisk()">Save risk &amp; goals</button></div></div>
+
     <div class="panel" style="max-width:520px;margin-top:16px"><div class="panel-h"><h3>AI Analyst</h3></div><div class="panel-b">
       <p class="mut" style="font-size:12.5px;margin-bottom:14px;line-height:1.55">The AI Analyst calls Claude to review your journal. Inside claude.ai it works automatically. If you run this file on your own (downloaded), paste an Anthropic API key — it's stored only on this device and sent only to Anthropic. You can also use "Copy for Claude" on the Analyst tab with no key at all.</p>
       <div class="field" style="margin-bottom:10px"><label>Anthropic API key (optional)</label><input class="inp mono" type="password" id="set_aikey" value="${esc(AIKEY||'')}" placeholder="sk-ant-..." autocomplete="off"></div>
@@ -1831,6 +1954,51 @@ async function saveSettings(){
   TRADES.forEach(t=>{ const c=calc(t); t.pnl=c.pnl; t.r=c.r; t.risk=c.risk; });
   await sSet('tj_trades',TRADES);
   refreshBal(); toast('Settings saved'); go('settings');
+}
+async function saveRisk(){
+  S.dailyLoss=+val('set_dloss')||0;
+  S.maxTrades=+val('set_maxtr')||0;
+  S.weeklyTarget=+val('set_wtgt')||0;
+  S.monthlyTarget=+val('set_mtgt')||0;
+  S.ddLimit=+val('set_dd')||0;
+  await sSet('tj_settings',S);
+  toast('Risk & goals saved'); go('settings');
+}
+function riskStatus(){
+  const today=new Date().toISOString().slice(0,10);
+  const dm=dailyMap(TRADES); const todayP=dm[today]||0;
+  const todayN=TRADES.filter(t=>t.date===today).length;
+  const now=new Date();
+  const ws=new Date(now); const day=(ws.getDay()+6)%7; ws.setDate(ws.getDate()-day); ws.setHours(0,0,0,0);
+  const ms=new Date(now.getFullYear(),now.getMonth(),1);
+  const weekP=TRADES.filter(t=>new Date(t.date+'T00:00:00')>=ws).reduce((s,t)=>s+(+t.pnl||0),0);
+  const monthP=TRADES.filter(t=>new Date(t.date+'T00:00:00')>=ms).reduce((s,t)=>s+(+t.pnl||0),0);
+  let eq=(S.startBal||0),peak=eq; sorted().forEach(t=>{ eq+=(+t.pnl||0); peak=Math.max(peak,eq); });
+  const curDD=Math.max(0,peak-eq);
+  return {todayP,todayN,weekP,monthP,curDD};
+}
+function riskWarnings(){
+  const r=riskStatus(),w=[];
+  if(S.dailyLoss && r.todayP <= -Math.abs(S.dailyLoss)) w.push(`Daily loss limit hit (${dollars(r.todayP)}). Consider stopping for today.`);
+  if(S.maxTrades && r.todayN >= S.maxTrades) w.push(`Max trades reached today (${r.todayN}/${S.maxTrades}).`);
+  if(S.ddLimit && r.curDD >= Math.abs(S.ddLimit)) w.push(`Drawdown limit breached (${fmt$(r.curDD)} from peak).`);
+  return w;
+}
+function riskConfigured(){ return !!(S.dailyLoss||S.maxTrades||S.weeklyTarget||S.monthlyTarget||S.ddLimit); }
+function riskRow(label, txt, val, max, col){
+  const pct = max>0 ? Math.min(100, Math.max(0, Math.abs(val)/max*100)) : 0;
+  return `<div class="risk-row"><div class="risk-h"><span>${label}</span><span class="mono">${txt}</span></div>
+    <div class="risk-bar"><div class="risk-fill" style="width:${pct.toFixed(0)}%;background:${col}"></div></div></div>`;
+}
+function riskCard(){
+  if(!riskConfigured()) return '';
+  const r=riskStatus(); let rows='';
+  if(S.dailyLoss) rows+=riskRow('Daily loss', `${dollars(Math.min(0,r.todayP))} / -${fmt$(S.dailyLoss)}`, Math.min(0,r.todayP), S.dailyLoss, 'var(--down)');
+  if(S.maxTrades) rows+=riskRow('Trades today', `${r.todayN} / ${S.maxTrades}`, r.todayN, S.maxTrades, 'var(--gold)');
+  if(S.ddLimit) rows+=riskRow('Drawdown', `${fmt$(r.curDD)} / ${fmt$(S.ddLimit)}`, r.curDD, S.ddLimit, 'var(--down)');
+  if(S.weeklyTarget) rows+=riskRow('Weekly target', `${dollars(r.weekP)} / ${fmt$(S.weeklyTarget)}`, Math.max(0,r.weekP), S.weeklyTarget, 'var(--up)');
+  if(S.monthlyTarget) rows+=riskRow('Monthly target', `${dollars(r.monthP)} / ${fmt$(S.monthlyTarget)}`, Math.max(0,r.monthP), S.monthlyTarget, 'var(--up)');
+  return `<div class="panel" style="margin-bottom:14px"><div class="panel-h"><h3>Risk &amp; goals</h3><a href="#settings" class="mut" style="font-size:12px">Edit →</a></div><div class="panel-b">${rows}</div></div>`;
 }
 async function saveAIKey(){
   AIKEY=val('set_aikey').trim();
