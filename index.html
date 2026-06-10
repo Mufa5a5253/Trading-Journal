@@ -571,7 +571,7 @@ let DOC = { shotMap:{} };       // in-memory journal document (mirrors journal.j
 let docFileId = '';
 let driveConnected = false;
 let gToken = '', tokenClient = null, _tokenResolve = null;
-let _saveT = null;
+let lastDriveErr = '';
 
 /* ---- local fallback (Drive not configured) ---- */
 let hasLS=false; try{ localStorage.setItem('__t','1'); localStorage.removeItem('__t'); hasLS=true; }catch(e){}
@@ -615,14 +615,18 @@ async function dFetch(url,opts){
 async function loadDoc(){
   const q=encodeURIComponent("name='journal.json'");
   const r=await dFetch('https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q='+q+'&fields=files(id,name,modifiedTime)&orderBy=modifiedTime desc&pageSize=5');
+  if(!r.ok){ lastDriveErr='list '+r.status+' '+(await r.text()).slice(0,140); throw new Error(lastDriveErr); }
   const j=await r.json();
-  if(j.files && j.files.length){ docFileId=j.files[0].id; const c=await dFetch('https://www.googleapis.com/drive/v3/files/'+docFileId+'?alt=media'); try{ DOC=await c.json(); }catch(e){ DOC={}; } }
-  else { DOC={}; docFileId=''; }
+  if(j.files && j.files.length){
+    docFileId=j.files[0].id;
+    const c=await dFetch('https://www.googleapis.com/drive/v3/files/'+docFileId+'?alt=media');
+    if(!c.ok){ lastDriveErr='read '+c.status; throw new Error(lastDriveErr); }
+    try{ DOC=await c.json(); }catch(e){ DOC={}; }
+  } else { DOC={}; docFileId=''; }
   if(!DOC || typeof DOC!=='object') DOC={};
   if(!DOC.shotMap) DOC.shotMap={};
   if(!docFileId) await saveDoc(true);
 }
-function scheduleSave(){ if(!driveConnected) return; setSync('saving'); if(_saveT) clearTimeout(_saveT); _saveT=setTimeout(()=>{ saveDoc(); }, 800); }
 async function saveDoc(force){
   if(!driveConnected && !force) return;
   setSync('saving');
@@ -630,18 +634,34 @@ async function saveDoc(force){
   try{
     if(!docFileId){
       const mr=await dFetch('https://www.googleapis.com/drive/v3/files?fields=id',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'journal.json',parents:['appDataFolder']})});
+      if(!mr.ok){ throw new Error('create '+mr.status+' '+(await mr.text()).slice(0,140)); }
       docFileId=(await mr.json()).id;
     }
-    if(docFileId) await dFetch('https://www.googleapis.com/upload/drive/v3/files/'+docFileId+'?uploadType=media',{method:'PATCH',headers:{'Content-Type':'application/json'},body});
+    const pr=await dFetch('https://www.googleapis.com/upload/drive/v3/files/'+docFileId+'?uploadType=media',{method:'PATCH',headers:{'Content-Type':'application/json'},body});
+    if(!pr.ok){ throw new Error('write '+pr.status+' '+(await pr.text()).slice(0,140)); }
     setSync('synced');
-  }catch(e){ setSync('error'); }
+  }catch(e){ lastDriveErr=String(e.message||e); setSync('error'); }
 }
 async function uploadShot(dataUrl){
   const blob=await (await fetch(dataUrl)).blob();
   const mr=await dFetch('https://www.googleapis.com/drive/v3/files?fields=id',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'shot_'+Date.now()+'_'+Math.random().toString(36).slice(2,6)+'.jpg',parents:['appDataFolder']})});
-  const fid=(await mr.json()).id; if(!fid) throw new Error('drive create failed');
-  await dFetch('https://www.googleapis.com/upload/drive/v3/files/'+fid+'?uploadType=media',{method:'PATCH',headers:{'Content-Type':blob.type||'image/jpeg'},body:blob});
+  if(!mr.ok){ lastDriveErr='shot create '+mr.status+' '+(await mr.text()).slice(0,140); throw new Error(lastDriveErr); }
+  const fid=(await mr.json()).id; if(!fid) throw new Error('drive create returned no id');
+  const pr=await dFetch('https://www.googleapis.com/upload/drive/v3/files/'+fid+'?uploadType=media',{method:'PATCH',headers:{'Content-Type':blob.type||'image/jpeg'},body:blob});
+  if(!pr.ok){ lastDriveErr='shot write '+pr.status; throw new Error(lastDriveErr); }
   return fid;
+}
+async function driveSelfTest(){
+  const log=['token: '+(gToken?('present '+gToken.slice(0,10)+'…'):'MISSING — not signed in')];
+  let testId='';
+  const step=async(name,fn)=>{ try{ const v=await fn(); log.push('OK  '+name+(v?'  ('+v+')':'')); }catch(e){ log.push('ERR '+name+'  '+(e.message||e)); } };
+  await step('create file', async()=>{ const r=await dFetch('https://www.googleapis.com/drive/v3/files?fields=id',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'_tj_test.json',parents:['appDataFolder']})}); if(!r.ok) throw new Error(r.status+' '+(await r.text()).slice(0,160)); testId=(await r.json()).id; return testId.slice(0,10)+'…'; });
+  await step('write bytes', async()=>{ if(!testId) throw new Error('no file id'); const r=await dFetch('https://www.googleapis.com/upload/drive/v3/files/'+testId+'?uploadType=media',{method:'PATCH',headers:{'Content-Type':'application/json'},body:'{"hello":1}'}); if(!r.ok) throw new Error(r.status+' '+(await r.text()).slice(0,160)); return 'written'; });
+  await step('read back', async()=>{ if(!testId) throw new Error('no file id'); const r=await dFetch('https://www.googleapis.com/drive/v3/files/'+testId+'?alt=media'); if(!r.ok) throw new Error(r.status); return (await r.text()).slice(0,40); });
+  await step('list appData', async()=>{ const r=await dFetch('https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&fields=files(id,name)&pageSize=20'); if(!r.ok) throw new Error(r.status); const j=await r.json(); return ((j.files||[]).map(f=>f.name).join(', ')||'empty'); });
+  await step('delete test', async()=>{ if(!testId) throw new Error('no file id'); const r=await dFetch('https://www.googleapis.com/drive/v3/files/'+testId,{method:'DELETE'}); return 'status '+r.status; });
+  if(lastDriveErr) log.push('last error: '+lastDriveErr);
+  openModal('Drive diagnostics', `<pre style="white-space:pre-wrap;font-size:11.5px;line-height:1.7;font-family:'JetBrains Mono';color:var(--ink)">${esc(log.join('\n'))}</pre>`, [`<button class="btn gold" onclick="closeModal('scrim')">Done</button>`], 'wide');
 }
 const SHOTCACHE={};
 async function downloadShot(fid){ if(!fid) throw new Error('no fid'); if(SHOTCACHE[fid]) return SHOTCACHE[fid]; const r=await dFetch('https://www.googleapis.com/drive/v3/files/'+fid+'?alt=media'); if(!r.ok) throw new Error('shot '+r.status); const u=URL.createObjectURL(await r.blob()); SHOTCACHE[fid]=u; return u; }
@@ -1905,7 +1925,7 @@ function vSettings(el){
 
     ${DRIVE_ON?`<div class="panel" style="max-width:520px;margin-top:16px"><div class="panel-h"><h3>Google Drive sync</h3></div><div class="panel-b">
       <p class="mut" style="font-size:12.5px;line-height:1.55;margin-bottom:13px">Your journal and screenshots are saved privately to your own Google Drive (a hidden app folder). It loads and saves automatically — no manual syncing.</p>
-      <button class="btn ghost" onclick="driveSignOut()">Sign out of Google Drive</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" onclick="driveSelfTest()">Run diagnostics</button><button class="btn ghost" onclick="driveSignOut()">Sign out of Google Drive</button></div>
     </div></div>`:''}
     ${hasPersist?'':'<div class="notice">⚠ This browser is blocking local storage, so data won\'t survive a refresh. Try a normal browser window (not private/incognito), or export a backup regularly.</div>'}
     <div class="panel" style="max-width:520px"><div class="panel-h"><h3>Prop firm / account</h3></div><div class="panel-b">
