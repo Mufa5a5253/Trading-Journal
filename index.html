@@ -574,11 +574,16 @@ function loadGsi(){ return new Promise(res=>{ if(window.google&&google.accounts&
   let done=false; const fin=()=>{ if(!done){ done=true; res(); } };
   const s=document.createElement('script'); s.src='https://accounts.google.com/gsi/client'; s.async=true; s.defer=true;
   s.onload=fin; s.onerror=fin; document.head.appendChild(s); setTimeout(fin, 9000); }); }
+function cacheToken(tok, expiresIn){ try{ localStorage.setItem('tj_gtok', JSON.stringify({t:tok, e:Date.now()+((expiresIn||3600)*1000)-120000})); }catch(_){} }
+function cachedToken(){ try{ const o=JSON.parse(localStorage.getItem('tj_gtok')); if(o&&o.t&&o.e>Date.now()) return o.t; }catch(e){} return ''; }
+function gHint(){ try{ return localStorage.getItem('tj_gmail')||undefined; }catch(e){ return undefined; } }
+async function fetchEmail(){ try{ const r=await dFetch('https://www.googleapis.com/drive/v3/about?fields=user'); const j=await r.json(); if(j.user&&j.user.emailAddress) localStorage.setItem('tj_gmail', j.user.emailAddress); }catch(e){} }
 function initTokenClient(){
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: GOOGLE_CLIENT_ID,
     scope: 'https://www.googleapis.com/auth/drive.appdata',
-    callback: (resp)=>{ gToken = (resp&&resp.access_token)?resp.access_token:''; if(_tokenResolve){ _tokenResolve(!!gToken); _tokenResolve=null; } },
+    hint: gHint(),
+    callback: (resp)=>{ gToken = (resp&&resp.access_token)?resp.access_token:''; if(gToken && resp.expires_in) cacheToken(gToken, resp.expires_in); if(_tokenResolve){ _tokenResolve(!!gToken); _tokenResolve=null; } },
     error_callback: (err)=>{ if(_tokenResolve){ _tokenResolve(false); _tokenResolve=null; } }
   });
 }
@@ -672,7 +677,7 @@ async function sDel(k){
   if(k.indexOf('tj_shots_')===0){ const id=k.slice(9); (DOC.shotMap&&DOC.shotMap[id]||[]).forEach(o=>deleteShotFile(o.fid)); if(DOC.shotMap) delete DOC.shotMap[id]; scheduleSave(); return; }
   const f=DOCKEYS[k]; if(f) delete DOC[f]; else delete DOC[k]; scheduleSave();
 }
-async function driveSignOut(){ try{ if(gToken) google.accounts.oauth2.revoke(gToken,()=>{}); }catch(e){} driveConnected=false; gToken=''; location.reload(); }
+async function driveSignOut(){ try{ localStorage.removeItem('tj_gtok'); localStorage.removeItem('tj_gmail'); }catch(e){} try{ if(gToken) google.accounts.oauth2.revoke(gToken,()=>{}); }catch(e){} driveConnected=false; gToken=''; location.reload(); }
 
 /* ============================== STATE ============================== */
 let S = { propFirm:'', accountSize:0, startBal:0, contract:100 };
@@ -682,6 +687,9 @@ let RANGE = 'all';
 let AI = null;
 let AIKEY = '';
 let fjLoaded = false;
+let MT5_RELAY_URL = '';
+let MT5_RELAY_TOKEN = '';
+const SHOW_RELAY_UI = false;   // hands-off MT5 relay UI hidden for now; set true to re-enable
 const ANALYST_SYS = "You are an elite trading-performance coach and quantitative analyst reviewing a trader's XAUUSD (gold) journal. Analyze the data for genuine statistical edge and costly leaks. Be specific and cite the numbers (sessions, setups, R-multiples, streaks, drawdown, psychology tags). Keep every point to one tight, concrete sentence. Do NOT give financial or investment advice, position calls, or price predictions — focus only on process, risk management, consistency, and behaviour. Respond with ONLY a valid minified JSON object — no markdown, no code fences, no preamble — in exactly this shape: {\"grade\":\"single letter A-F, optional +/-\",\"headline\":\"one sentence overall read\",\"strengths\":[\"..\"],\"leaks\":[\"..\"],\"actions\":[\"..\"],\"focus\":\"one sentence: the single highest-impact fix\"}. Maximum 4 items per array. If sample size is small, say so in the headline.";
 
 const PSYCH = {
@@ -695,13 +703,21 @@ async function init(){
   const theme = await sGet('tj_theme','light');
   document.body.classList.toggle('dark', theme==='dark');
   if(!DRIVE_ON){ await loadApp(); return; }
-  // watchdog: if startup stalls for any reason, force the connect gate so the page is never frozen
   const watchdog=setTimeout(()=>{ if(!driveConnected) showGate(); }, 11000);
   try{
     await loadGsi();
-    if(!(window.google&&google.accounts&&google.accounts.oauth2)){ clearTimeout(watchdog); showGate('error'); return; }
-    initTokenClient();
-    const ok = await getToken(false);    // silent re-auth for returning users
+    const gisOk = window.google&&google.accounts&&google.accounts.oauth2;
+    if(gisOk) initTokenClient();
+    // 1) reuse a still-valid cached token -> straight in, no prompt
+    const ct=cachedToken();
+    if(ct){
+      gToken=ct; driveConnected=true;
+      try{ await loadDoc(); clearTimeout(watchdog); setSync('synced'); fetchEmail(); await loadApp(); return; }
+      catch(e){ driveConnected=false; gToken=''; }
+    }
+    if(!gisOk){ clearTimeout(watchdog); showGate('error'); return; }
+    // 2) silent re-auth for returning users (with account hint)
+    const ok = await getToken(false);
     clearTimeout(watchdog);
     if(ok){ await afterConnect(); } else { showGate(); }
   }catch(e){ clearTimeout(watchdog); showGate('error'); }
@@ -709,7 +725,7 @@ async function init(){
 async function afterConnect(){
   driveConnected=true; hideGate();
   try{ await loadDoc(); }catch(e){ showGate('error'); return; }
-  setSync('synced');
+  setSync('synced'); fetchEmail();
   await loadApp();
 }
 async function loadApp(){
@@ -719,11 +735,14 @@ async function loadApp(){
   TRADES = await sGet('tj_trades', []);
   AI = await sGet('tj_ai', null);
   AIKEY = await sGet('tj_aikey', '');
+  MT5_RELAY_URL = await sGet('tj_relayurl', '');
+  MT5_RELAY_TOKEN = await sGet('tj_relaytoken', '');
   buildNav();
   setBrandLogos();
   updateThemeBtn();
   refreshBal();
   go(location.hash.replace('#','') || 'dashboard');
+  if(MT5_RELAY_URL){ startMT5Poll(); pullMT5(true); }
 }
 function showGate(state){
   let g=document.getElementById('gate');
@@ -1674,20 +1693,13 @@ function readMT5File(f){
   r.onerror=()=>document.getElementById('mt5status').textContent='Could not read that file.';
   r.readAsText(f);
 }
-async function doImport(){
-  const raw=val('mt5paste').trim();
-  if(!raw){ toast('Choose a file or paste the JSON first'); return; }
-  let data; try{ data=JSON.parse(raw); }catch(e){ toast("That doesn't look like valid JSON"); return; }
-  const arr=Array.isArray(data)?data:(data.trades||[]);
-  if(!arr.length){ toast('No trades found in that file'); return; }
-  document.getElementById('mt5status').textContent='Importing… (compressing screenshots)';
-  let added=0,updated=0;
+async function importMT5Trades(arr){
+  let added=0,updated=0; const tickets=[];
   for(const m of arr){
     const ticket=String(m.ticket||m.posId||m.id||'');
     let t = ticket ? TRADES.find(x=>x.mt5Ticket===ticket) : null;
     const dir = (m.direction==='short'||m.direction==='sell'||m.type===1) ? 'short' : 'long';
     const isOpen = m.closed===false || m.open===true;
-    // screenshots -> compressed {data,label}
     let shots=[];
     if(Array.isArray(m.shots)){
       for(const s of m.shots){
@@ -1712,7 +1724,7 @@ async function doImport(){
     };
     if(m.profit!=null && !isOpen) base.pnlManual=m.profit;
     if(t){
-      Object.assign(t,base);                 // keep user's setup/tags/notes
+      Object.assign(t,base);
       const c=calc(t); t.pnl=isOpen?0:c.pnl; t.r=c.r; t.risk=c.risk;
       if(shots.length){ await sSet('tj_shots_'+t.id,shots); t.hasShots=true; }
       updated++;
@@ -1723,16 +1735,64 @@ async function doImport(){
       if(shots.length) await sSet('tj_shots_'+nt.id,shots);
       added++;
     }
+    if(ticket) tickets.push(ticket);
   }
   await sSet('tj_trades',TRADES);
+  return {added,updated,tickets};
+}
+async function doImport(){
+  const raw=val('mt5paste').trim();
+  if(!raw){ toast('Choose a file or paste the JSON first'); return; }
+  let data; try{ data=JSON.parse(raw); }catch(e){ toast("That doesn't look like valid JSON"); return; }
+  const arr=Array.isArray(data)?data:(data.trades||[]);
+  if(!arr.length){ toast('No trades found in that file'); return; }
+  const st=document.getElementById('mt5status'); if(st) st.textContent='Importing…';
+  const r=await importMT5Trades(arr);
   closeModal('scrim'); refreshBal(); go(VIEW);
-  toast(`MT5 sync — ${added} new, ${updated} updated`);
+  toast(`MT5 sync — ${r.added} new, ${r.updated} updated`);
+}
+/* ---- relay auto-pull (hands-off MT5) ---- */
+function jsonp(url){ return new Promise((res,rej)=>{
+  const cb='__mt5cb_'+Date.now()+Math.floor(Math.random()*1e4);
+  const s=document.createElement('script');
+  const to=setTimeout(()=>{ cleanup(); rej(new Error('timeout')); }, 15000);
+  function cleanup(){ clearTimeout(to); try{ delete window[cb]; }catch(e){} s.remove(); }
+  window[cb]=(d)=>{ cleanup(); res(d); };
+  s.onerror=()=>{ cleanup(); rej(new Error('network')); };
+  s.src=url+(url.indexOf('?')>=0?'&':'?')+'callback='+cb;
+  document.head.appendChild(s);
+}); }
+let _mt5Poll=null;
+async function pullMT5(silent){
+  if(!MT5_RELAY_URL) { if(!silent) toast('Set up MT5 auto-sync in Settings first'); return; }
+  try{
+    const r=await jsonp(MT5_RELAY_URL+'?token='+encodeURIComponent(MT5_RELAY_TOKEN));
+    if(!r||!r.ok){ if(!silent) toast('Relay error: '+((r&&r.error)||'check URL/token')); return; }
+    if(!Array.isArray(r.trades)||!r.trades.length){ if(!silent) toast('No new MT5 trades'); return; }
+    const res=await importMT5Trades(r.trades);
+    for(const tk of res.tickets){ try{ await jsonp(MT5_RELAY_URL+'?token='+encodeURIComponent(MT5_RELAY_TOKEN)+'&del='+encodeURIComponent(tk)); }catch(e){} }
+    refreshBal(); if(VIEW) go(VIEW);
+    if(!silent) toast(`MT5 — ${res.added} new, ${res.updated} updated`);
+  }catch(e){ if(!silent) toast('MT5 relay unreachable'); }
+}
+function startMT5Poll(){ if(_mt5Poll) return; _mt5Poll=setInterval(()=>{ if(MT5_RELAY_URL) pullMT5(true); }, 45000); }
+async function saveRelay(){
+  MT5_RELAY_URL=val('relayUrl').trim(); MT5_RELAY_TOKEN=val('relayToken').trim();
+  await sSet('tj_relayurl',MT5_RELAY_URL); await sSet('tj_relaytoken',MT5_RELAY_TOKEN);
+  toast('MT5 auto-sync saved'); startMT5Poll(); pullMT5();
 }
 
 /* ============================== SETTINGS ============================== */
 function vSettings(el){
   const eq=(S.startBal||0)+TRADES.reduce((s,t)=>s+(+t.pnl||0),0);
   el.innerHTML=`<div class="vhead"><div><h1>Settings</h1><div class="sub">Account & instrument</div></div></div>
+    ${SHOW_RELAY_UI?`<div class="panel" style="max-width:520px;margin-top:16px"><div class="panel-h"><h3>MT5 auto-sync</h3></div><div class="panel-b">
+      <p class="mut" style="font-size:12.5px;line-height:1.55;margin-bottom:13px">Hands-off MT5 logging. Deploy the relay script (XAUJournalRelay.gs) to your Google account, then paste its Web app URL + your secret token here and in the EA. Trades and screenshots then flow in automatically — no file uploads.</p>
+      <div class="field"><label>Relay web app URL</label><input class="inp mono" id="relayUrl" value="${esc(MT5_RELAY_URL||'')}" placeholder="https://script.google.com/macros/s/.../exec"></div>
+      <div class="field"><label>Secret token</label><input class="inp mono" id="relayToken" value="${esc(MT5_RELAY_TOKEN||'')}" placeholder="must match the EA + relay"></div>
+      <div style="display:flex;gap:8px"><button class="btn gold" onclick="saveRelay()">Save</button><button class="btn ghost" onclick="pullMT5()">Pull now</button></div>
+    </div></div>`:''}
+
     ${DRIVE_ON?`<div class="panel" style="max-width:520px;margin-top:16px"><div class="panel-h"><h3>Google Drive sync</h3></div><div class="panel-b">
       <p class="mut" style="font-size:12.5px;line-height:1.55;margin-bottom:13px">Your journal and screenshots are saved privately to your own Google Drive (a hidden app folder). It loads and saves automatically — no manual syncing.</p>
       <button class="btn ghost" onclick="driveSignOut()">Sign out of Google Drive</button>
