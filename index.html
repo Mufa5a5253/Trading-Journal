@@ -477,7 +477,7 @@ body.dark{ --rail-bg1:#241d12; --rail-bg2:#16110a; --rail-glow:rgba(236,196,106,
 .nt-col{min-width:0}
 .nt-col:first-child{border-right:1px solid var(--line)}
 .nt-h{padding:15px 18px;font-family:'Space Grotesk';font-size:11.5px;text-transform:uppercase;letter-spacing:1.3px;color:var(--mut);font-weight:600;border-bottom:1px solid var(--line)}
-.news-terminal{background:#0d0f13!important;border:1px solid var(--rail-line)!important;overflow:hidden;padding:0;border-radius:18px}
+.news-terminal{background:#1e222d!important;border:1px solid var(--rail-line)!important;overflow:hidden;padding:0;border-radius:18px}
 .news-terminal .nt-col:first-child{border-right-color:var(--rail-line)}
 .news-terminal .nt-h{color:var(--rail-gold);border-bottom-color:var(--rail-line)}
 @media(max-width:900px){ .nt-grid{grid-template-columns:1fr} .nt-col:first-child{border-right:none;border-bottom:1px solid var(--line)} .news-terminal .nt-col:first-child{border-bottom-color:var(--rail-line)} }
@@ -1823,42 +1823,43 @@ function copyWeekly(){
 function showCopyBox(txt){ openModal('Copy weekly review',`<p class="mut" style="font-size:13px;margin-bottom:10px">Copy this into a Claude chat:</p><textarea class="inp mono" style="min-height:260px;font-size:11px" onclick="this.select()">${esc(txt)}</textarea>`,[`<button class="btn gold" onclick="closeModal('scrim')">Done</button>`],'wide'); }
 
 /* ============================== NEWS ============================== */
-function newsColors(){ return { bg:'0d0f13', font:'d9c79e', mode:'Dark' }; }
 function vNews(el){
   el.innerHTML=`<div class="vhead"><div><h1>News</h1><div class="sub">FinancialJuice economic calendar &amp; live headlines</div></div>
     <button class="btn ghost" onclick="go('news')">Refresh</button></div>`;
-  el.insertAdjacentHTML('beforeend',`
-    <div class="panel news-terminal" style="margin-bottom:14px"><div class="nt-h">Economic calendar</div><div class="news-wrap" id="newsCal"></div></div>
-    <div class="panel news-terminal"><div class="nt-h">Headlines</div><div class="news-wrap" id="newsHead"></div></div>`);
+  el.insertAdjacentHTML('beforeend',`<div class="panel news-terminal"><div class="nt-grid">
+    <div class="nt-col"><div class="nt-h">Economic calendar</div><div class="news-wrap" id="newsCal"></div></div>
+    <div class="nt-col"><div class="nt-h">Headlines</div><div class="news-wrap" id="newsHead"></div></div>
+  </div></div>`);
   const calWrap=document.getElementById('newsCal'), headWrap=document.getElementById('newsHead');
-  const cw=Math.max(300, Math.floor(calWrap.clientWidth)-2);
-  const hw=Math.max(300, Math.floor(headWrap.clientWidth)-2);
-  buildFJWidget(calWrap,'financialjuice-eco-widget-container','ECOCAL','table',cw,560);
-  buildFJWidget(headWrap,'financialjuice-news-widget-container','NEWS','Dark',hw,520);
+  const h=Math.max(600, Math.round(window.innerHeight-200));
+  const cw=Math.max(320, Math.floor(calWrap.clientWidth));
+  const hw=Math.max(320, Math.floor(headWrap.clientWidth));
+  buildFJWidget(calWrap,'financialjuice-eco-widget-container','ECOCAL','table',cw,h);
+  buildFJWidget(headWrap,'financialjuice-news-widget-container','NEWS','Dark',hw,h);
 }
 function buildFJWidget(wrap, containerId, widgetType, mode, w, h){
   if(!wrap) return;
-  var c=newsColors();
   wrap.innerHTML='';
-  var div=document.createElement('div'); div.id=containerId; wrap.appendChild(div);
-  var jo=document.createElement('script');
-  jo.type='text/javascript';
-  jo.id='FJ-Widgets';
+  var div=document.createElement("div"); div.id=containerId; wrap.appendChild(div);
+  var jo=document.createElement("script");
+  jo.type="text/javascript";
+  jo.id="FJ-Widgets";
   var r=Math.floor(Math.random()*(9999-0+1)+0);
-  jo.src='https://feed.financialjuice.com/widgets/widgets.js?r='+r+'';
+  jo.src="https://feed.financialjuice.com/widgets/widgets.js?r="+r+"";
   jo.onload=function(){
     try{
       var options={};
       options.container=containerId;
       options.mode=mode;
-      options.width=w+'px';
-      options.height=h+'px';
-      options.backColor=c.bg;
+      options.width=w+"px";
+      options.height=h+"px";
+      options.backColor="1e222d";
+      options.fontColor="b2b5be";
       options.widgetType=widgetType;
       new window.FJWidgets.createWidget(options);
     }catch(e){}
   };
-  document.getElementsByTagName('head')[0].appendChild(jo);
+  document.getElementsByTagName("head")[0].appendChild(jo);
 }
 
 /* ============================== LIBRARY (setups) ============================== */
