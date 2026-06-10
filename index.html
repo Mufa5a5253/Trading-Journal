@@ -614,7 +614,7 @@ async function dFetch(url,opts){
 }
 async function loadDoc(){
   const q=encodeURIComponent("name='journal.json'");
-  const r=await dFetch('https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q='+q+'&fields=files(id,name)&pageSize=1');
+  const r=await dFetch('https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q='+q+'&fields=files(id,name,modifiedTime)&orderBy=modifiedTime desc&pageSize=5');
   const j=await r.json();
   if(j.files && j.files.length){ docFileId=j.files[0].id; const c=await dFetch('https://www.googleapis.com/drive/v3/files/'+docFileId+'?alt=media'); try{ DOC=await c.json(); }catch(e){ DOC={}; } }
   else { DOC={}; docFileId=''; }
@@ -625,6 +625,7 @@ async function loadDoc(){
 function scheduleSave(){ if(!driveConnected) return; setSync('saving'); if(_saveT) clearTimeout(_saveT); _saveT=setTimeout(()=>{ saveDoc(); }, 800); }
 async function saveDoc(force){
   if(!driveConnected && !force) return;
+  setSync('saving');
   const body=JSON.stringify(DOC);
   try{
     if(!docFileId){
@@ -678,15 +679,15 @@ async function sSet(k,v){
     }
     const keep=new Set(newRefs.map(r=>r.fid));
     oldRefs.forEach(o=>{ if(!keep.has(o.fid)) deleteShotFile(o.fid); });
-    DOC.shotMap[id]=newRefs; scheduleSave(); return true;
+    DOC.shotMap[id]=newRefs; await saveDoc(); return true;
   }
-  const f=DOCKEYS[k]; if(f) DOC[f]=v; else DOC[k]=v; scheduleSave(); return true;
+  const f=DOCKEYS[k]; if(f) DOC[f]=v; else DOC[k]=v; await saveDoc(); return true;
 }
 async function sDel(k){
   if(k==='tj_theme'){ lsDel(k); return; }
   if(!(DRIVE_ON && driveConnected)){ lsDel(k); return; }
-  if(k.indexOf('tj_shots_')===0){ const id=k.slice(9); (DOC.shotMap&&DOC.shotMap[id]||[]).forEach(o=>deleteShotFile(o.fid)); if(DOC.shotMap) delete DOC.shotMap[id]; scheduleSave(); return; }
-  const f=DOCKEYS[k]; if(f) delete DOC[f]; else delete DOC[k]; scheduleSave();
+  if(k.indexOf('tj_shots_')===0){ const id=k.slice(9); (DOC.shotMap&&DOC.shotMap[id]||[]).forEach(o=>deleteShotFile(o.fid)); if(DOC.shotMap) delete DOC.shotMap[id]; await saveDoc(); return; }
+  const f=DOCKEYS[k]; if(f) delete DOC[f]; else delete DOC[k]; await saveDoc();
 }
 async function driveSignOut(){ try{ localStorage.removeItem('tj_gtok'); localStorage.removeItem('tj_gmail'); }catch(e){} try{ if(gToken) google.accounts.oauth2.revoke(gToken,()=>{}); }catch(e){} driveConnected=false; gToken=''; location.reload(); }
 
