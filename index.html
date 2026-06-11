@@ -1225,8 +1225,13 @@ function lightbox(i){ document.getElementById('lbImg').src=shotData(formShots[i]
 function lightboxSrc(src){ document.getElementById('lbImg').src=src; document.getElementById('lightbox').classList.add('on'); }
 
 async function saveTrade(){
+  if(window._busyTrade) return;
   const entry=val('f_entry');
   if(entry===''){ toast('Entry price is required'); return; }
+  window._busyTrade=true;
+  const btns=[...document.querySelectorAll('#scrim .modal-f button')]; btns.forEach(b=>b.disabled=true);
+  const saveBtn=btns.find(b=>/log trade|save trade|update/i.test(b.textContent||'')); const orig=saveBtn?saveBtn.textContent:'';
+  if(saveBtn) saveBtn.textContent='Saving…';
   const strats=[...document.querySelectorAll('#stratChips .chip.on')].map(b=>b.dataset.strat);
   const psych=[...document.querySelectorAll('#psychChips .chip.on')].map(b=>b.dataset.psy);
   const t={
@@ -1243,23 +1248,41 @@ async function saveTrade(){
     hasShots: formShots.length>0
   };
   const c=calc(t); t.pnl=c.pnl; t.r=c.r; t.risk=c.risk;
-  if(editingId){ const i=TRADES.findIndex(x=>x.id===editingId); TRADES[i]=t; }
-  else TRADES.push(t);
-  await sSet('tj_trades',TRADES);
-  if(formShots.length) await sSet('tj_shots_'+t.id, formShots); else await sDel('tj_shots_'+t.id);
-  closeModal('scrim'); refreshBal(); go(VIEW);
-  const _w=riskWarnings();
-  toast(_w.length ? '⚠ '+_w[0] : (editingId?'Trade updated':'Trade logged'));
+  try{
+    if(editingId){ const i=TRADES.findIndex(x=>x.id===editingId); TRADES[i]=t; }
+    else TRADES.push(t);
+    if(formShots.length) await sSet('tj_shots_'+t.id, formShots);
+    else if(editingId) await sDel('tj_shots_'+t.id);
+    await sSet('tj_trades',TRADES);
+    closeModal('scrim'); refreshBal(); go(VIEW);
+    const _w=riskWarnings();
+    toast(_w.length ? '⚠ '+_w[0] : (editingId?'Trade updated':'Trade logged'));
+  }catch(e){
+    btns.forEach(b=>b.disabled=false); if(saveBtn) saveBtn.textContent=orig;
+    toast('Save failed — check your connection');
+  }finally{ window._busyTrade=false; }
 }
 
 /* delete with undo */
 let lastDeleted=null, lastShots=null;
 async function delTrade(id){
+  if(window._busyDel) return;
   const i=TRADES.findIndex(t=>t.id===id); if(i<0) return;
-  lastDeleted=TRADES[i]; lastShots=await sGet('tj_shots_'+id,null);
-  TRADES.splice(i,1); await sSet('tj_trades',TRADES); await sDel('tj_shots_'+id);
-  refreshBal(); go(VIEW); closeModal('detailScrim');
-  toast('Trade deleted', 'Undo', undoDelete);
+  window._busyDel=true;
+  const btns=[...document.querySelectorAll('#detailScrim .modal-f button')]; btns.forEach(b=>b.disabled=true);
+  const delBtn=btns.find(b=>/delete/i.test(b.textContent||'')); if(delBtn) delBtn.textContent='Deleting…';
+  try{
+    lastDeleted=TRADES[i];
+    lastShots = (DRIVE_ON && driveConnected) ? null : await sGet('tj_shots_'+id,null);  // skip slow Drive download
+    TRADES.splice(i,1);
+    await sSet('tj_trades',TRADES);
+    await sDel('tj_shots_'+id);
+    refreshBal(); go(VIEW); closeModal('detailScrim');
+    toast('Trade deleted', 'Undo', undoDelete);
+  }catch(e){
+    btns.forEach(b=>b.disabled=false); if(delBtn) delBtn.textContent='Delete';
+    toast('Delete failed — check your connection');
+  }finally{ window._busyDel=false; }
 }
 async function undoDelete(){
   if(!lastDeleted) return;
