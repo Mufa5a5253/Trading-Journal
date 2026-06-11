@@ -385,6 +385,13 @@ body.dark #gate{background:radial-gradient(900px 600px at 50% -10%, #241d10, #0e
 .gate-err{background:var(--down-bg);border:1px solid color-mix(in srgb,var(--down) 35%,transparent);color:var(--down);border-radius:10px;padding:10px 12px;font-family:'JetBrains Mono';font-size:11px;line-height:1.5;margin:0 0 14px;text-align:left;word-break:break-word}
 .sync{font-size:10px;font-weight:700;text-align:center;margin-top:11px;letter-spacing:.4px;color:var(--rail-mut);text-transform:uppercase}
 .sync.synced{color:var(--rgain)} .sync.saving{color:var(--rail-gold)} .sync.error{color:var(--rloss)}
+.synctop{position:fixed;top:14px;left:50%;transform:translateX(-50%) translateY(-22px);z-index:95;display:flex;align-items:center;gap:8px;padding:8px 16px;border-radius:999px;font-size:12.5px;font-weight:700;letter-spacing:.2px;box-shadow:var(--shadow-lg);opacity:0;pointer-events:none;transition:opacity .25s, transform .25s}
+.synctop.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.synctop.saving{background:#1e222d;color:#f0b429;border:1px solid rgba(240,180,41,.4)}
+.synctop.synced{background:#0e9d6b;color:#fff}
+.synctop.error{background:#d6453f;color:#fff}
+.synctop .ss{width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:sspin .7s linear infinite}
+@keyframes sspin{to{transform:rotate(360deg)}}
 :root{ --rail-bg1:#16120b; --rail-bg2:#0b0905; --rail-glow:rgba(236,196,106,.11);
   --rail-ink:#f3edda; --rail-mut:#a2957c; --rail-gold:#edc46a;
   --rail-line:rgba(236,196,106,.14); --rail-soft:rgba(255,255,255,.045);
@@ -538,6 +545,7 @@ body.dark{ --rail-bg1:#241d12; --rail-bg2:#16110a; --rail-glow:rgba(236,196,106,
 
 <div class="scrim" id="scrim"></div>
 <div class="lightbox" id="lightbox" onclick="this.classList.remove('on')"><img id="lbImg"></div>
+<div class="synctop" id="syncTop"></div>
 <div class="toast" id="toast"><span id="toastMsg"></span><button id="toastBtn" style="display:none"></button></div>
 
 <script>
@@ -679,8 +687,16 @@ function shotRefsFor(id){
 }
 async function resolveShot(ref){ return ref.fid ? await downloadShot(ref.fid) : (ref.data||''); }
 function deleteShotFile(fid){ try{ dFetch('https://www.googleapis.com/drive/v3/files/'+fid,{method:'DELETE'}); }catch(e){} }
-function setSync(state){ const el=document.getElementById('syncDot'); if(!el) return;
+function setSync(state){ const el=document.getElementById('syncDot'); if(el){
   el.className='sync '+state; el.textContent = state==='saving'?'Saving…':state==='synced'?'Synced to Drive':state==='error'?'Sync error':'Offline'; }
+  const top=document.getElementById('syncTop'); if(top){
+    clearTimeout(top._t);
+    if(state==='saving'){ top.className='synctop show saving'; top.innerHTML='<span class="ss"></span>Saving to Drive…'; }
+    else if(state==='synced'){ top.className='synctop show synced'; top.innerHTML='✓ Synced to Drive'; top._t=setTimeout(()=>{ top.className='synctop'; }, 1600); }
+    else if(state==='error'){ top.className='synctop show error'; top.innerHTML='⚠ Sync error — change not saved'; }
+    else { top.className='synctop'; }
+  }
+}
 
 /* ---- unified storage interface used by the whole app ---- */
 async function sGet(k,def){
@@ -1225,15 +1241,12 @@ function lightbox(i){ document.getElementById('lbImg').src=shotData(formShots[i]
 function lightboxSrc(src){ document.getElementById('lbImg').src=src; document.getElementById('lightbox').classList.add('on'); }
 
 async function saveTrade(){
-  if(window._busyTrade) return;
+  if(window._busyTrade) return; window._busyTrade=true;
   const entry=val('f_entry');
-  if(entry===''){ toast('Entry price is required'); return; }
-  window._busyTrade=true;
-  const btns=[...document.querySelectorAll('#scrim .modal-f button')]; btns.forEach(b=>b.disabled=true);
-  const saveBtn=btns.find(b=>/log trade|save trade|update/i.test(b.textContent||'')); const orig=saveBtn?saveBtn.textContent:'';
-  if(saveBtn) saveBtn.textContent='Saving…';
+  if(entry===''){ toast('Entry price is required'); window._busyTrade=false; return; }
   const strats=[...document.querySelectorAll('#stratChips .chip.on')].map(b=>b.dataset.strat);
   const psych=[...document.querySelectorAll('#psychChips .chip.on')].map(b=>b.dataset.psy);
+  const wasEdit=editingId;
   const t={
     id: editingId||uid(),
     date: val('f_date')||new Date().toISOString().slice(0,10),
@@ -1248,47 +1261,47 @@ async function saveTrade(){
     hasShots: formShots.length>0
   };
   const c=calc(t); t.pnl=c.pnl; t.r=c.r; t.risk=c.risk;
+  const shots=formShots.slice();
+  if(wasEdit){ const i=TRADES.findIndex(x=>x.id===wasEdit); if(i>=0) TRADES[i]=t; }
+  else TRADES.push(t);
+  // instant UI
+  closeModal('scrim'); refreshBal(); go(VIEW);
+  const _w=riskWarnings();
+  toast(_w.length ? '⚠ '+_w[0] : (wasEdit?'Trade updated':'Trade logged'));
+  window._busyTrade=false;
+  // background persist to Drive
+  persistTrade(t, shots, wasEdit);
+}
+async function persistTrade(t, shots, wasEdit){
   try{
-    if(editingId){ const i=TRADES.findIndex(x=>x.id===editingId); TRADES[i]=t; }
-    else TRADES.push(t);
-    if(formShots.length) await sSet('tj_shots_'+t.id, formShots);
-    else if(editingId) await sDel('tj_shots_'+t.id);
+    if(shots.length) await sSet('tj_shots_'+t.id, shots);
+    else if(wasEdit) await sDel('tj_shots_'+t.id);
     await sSet('tj_trades',TRADES);
-    closeModal('scrim'); refreshBal(); go(VIEW);
-    const _w=riskWarnings();
-    toast(_w.length ? '⚠ '+_w[0] : (editingId?'Trade updated':'Trade logged'));
-  }catch(e){
-    btns.forEach(b=>b.disabled=false); if(saveBtn) saveBtn.textContent=orig;
-    toast('Save failed — check your connection');
-  }finally{ window._busyTrade=false; }
+  }catch(e){ toast('Drive sync failed — your last change may not be saved'); }
 }
 
 /* delete with undo */
 let lastDeleted=null, lastShots=null;
 async function delTrade(id){
-  if(window._busyDel) return;
-  const i=TRADES.findIndex(t=>t.id===id); if(i<0) return;
-  window._busyDel=true;
-  const btns=[...document.querySelectorAll('#detailScrim .modal-f button')]; btns.forEach(b=>b.disabled=true);
-  const delBtn=btns.find(b=>/delete/i.test(b.textContent||'')); if(delBtn) delBtn.textContent='Deleting…';
-  try{
-    lastDeleted=TRADES[i];
-    lastShots = (DRIVE_ON && driveConnected) ? null : await sGet('tj_shots_'+id,null);  // skip slow Drive download
-    TRADES.splice(i,1);
-    await sSet('tj_trades',TRADES);
-    await sDel('tj_shots_'+id);
-    refreshBal(); go(VIEW); closeModal('detailScrim');
-    toast('Trade deleted', 'Undo', undoDelete);
-  }catch(e){
-    btns.forEach(b=>b.disabled=false); if(delBtn) delBtn.textContent='Delete';
-    toast('Delete failed — check your connection');
-  }finally{ window._busyDel=false; }
+  if(window._busyDel) return; window._busyDel=true;
+  const i=TRADES.findIndex(t=>t.id===id); if(i<0){ window._busyDel=false; return; }
+  lastDeleted=TRADES[i];
+  lastShots = (DRIVE_ON && driveConnected) ? null : await sGet('tj_shots_'+id,null);
+  TRADES.splice(i,1);
+  // instant UI
+  refreshBal(); go(VIEW); closeModal('detailScrim');
+  toast('Trade deleted', 'Undo', undoDelete);
+  window._busyDel=false;
+  // background persist
+  (async()=>{ try{ await sSet('tj_trades',TRADES); await sDel('tj_shots_'+id); }catch(e){} })();
 }
 async function undoDelete(){
   if(!lastDeleted) return;
-  TRADES.push(lastDeleted); await sSet('tj_trades',TRADES);
-  if(lastShots) await sSet('tj_shots_'+lastDeleted.id,lastShots);
-  lastDeleted=null; lastShots=null; refreshBal(); go(VIEW);
+  const restored=lastDeleted, rShots=lastShots;
+  TRADES.push(restored);
+  lastDeleted=null; lastShots=null;
+  refreshBal(); go(VIEW);
+  (async()=>{ try{ if(rShots) await sSet('tj_shots_'+restored.id,rShots); await sSet('tj_trades',TRADES); }catch(e){} })();
 }
 
 /* trade detail */
